@@ -8,10 +8,10 @@ Privacy-first installer for [Zed](https://zed.dev/) on Linux. Configures Zed for
 |-------|------------------|------------|
 | **settings.json** | Telemetry, crash reports, update checks, sign-in UI, cloud tool permissions | Does not block network at OS level |
 | **zed-secure wrapper** | Clears cloud API keys from environment | Keys in OS keychain still possible if added manually |
-| **Network sandbox** (`--enable-network-sandbox`) | Blocks all outbound except loopback via `systemd-run` | Requires systemd; breaks extension marketplace, remote LSP |
+| **Network sandbox** | Blocks all outbound except loopback via `systemd-run` (enabled by default for local-AI) | Requires systemd; breaks extension marketplace, remote LSP |
 | **Endpoint blocklist** (`--enable-endpoint-blocklist`) | Best-effort `/etc/hosts` for known cloud domains (no global nft rules) | Not authoritative; hostname-only; does not block all egress OS-wide; wildcards unsupported in hosts |
 
-**For proprietary code with local AI:** use `--enable-network-sandbox`. Settings alone are not sufficient.
+**For proprietary code with local AI:** network sandbox is enabled automatically when you pass `--llm-model`. Use `--no-network-sandbox` only if you accept cloud egress risk. Settings alone are not sufficient.
 
 ## Requirements
 
@@ -35,7 +35,6 @@ Privacy-first installer for [Zed](https://zed.dev/) on Linux. Configures Zed for
   --install-deps \
   --llm-model your-model-name \
   --llm-api-url http://127.0.0.1:8080/v1 \
-  --enable-network-sandbox \
   --enable-endpoint-blocklist
 ```
 
@@ -44,7 +43,6 @@ Privacy-first installer for [Zed](https://zed.dev/) on Linux. Configures Zed for
 ```sh
 ./scripts/install-zed-secure.sh \
   --llm-model test-model \
-  --enable-network-sandbox \
   --dry-run
 ```
 
@@ -65,8 +63,9 @@ Privacy-first installer for [Zed](https://zed.dev/) on Linux. Configures Zed for
 | `--llm-completions-url URL` | Edit predictions endpoint (default: `{api-url}/completions`) |
 | `--disable-local-edit-predictions` | Disable inline completions, keep Agent Panel |
 | `--allow-nonlocal-llm` | Allow LLM URL not on loopback (not recommended) |
-| `--enable-network-sandbox` | Run via `systemd-run` with localhost-only network |
-| `--allow-no-sandbox` | Continue if sandbox unavailable |
+| `--enable-network-sandbox` | Explicitly enable `systemd-run` localhost-only network (default for local-AI) |
+| `--no-network-sandbox` | Opt out of network sandbox (not recommended for proprietary code) |
+| `--allow-no-sandbox` | Continue if sandbox unavailable (local-AI default expects sandbox) |
 | `--enable-endpoint-blocklist` | Add `/etc/hosts` blocklist for cloud endpoints (hosts only) |
 | `--do-not-hide-env-files` | Keep `.env` visible in file tree (still protected from AI writes) |
 | `--force-config` | Overwrite existing settings (with backup) |
@@ -142,11 +141,11 @@ In Zed: Command Palette → `zed: open telemetry log` — should stay empty afte
 
 ## Known Limitations
 
-1. **No `disable_cloud_ai` setting** — Zed has no setting to disable cloud providers while keeping local AI. Mitigation: loopback-only URLs + network sandbox + no sign-in.
+1. **No `disable_cloud_ai` setting** — Zed has no setting to disable cloud providers while keeping local AI. Mitigation: loopback-only URLs + network sandbox (on by default for local-AI) + no sign-in.
 2. **Training data opt-in** — UI toggle only; no settings key.
 3. **Server-side telemetry** — Cannot be disabled when using sign-in, hosted AI, or collaboration.
 4. **Extensions** — May make network requests; avoid untrusted extensions.
-5. **Endpoint blocklist** — Hosts-only best-effort; no global nft drop rules; does not replace process-level sandbox (`--enable-network-sandbox`).
+5. **Endpoint blocklist** — Hosts-only best-effort; no global nft drop rules; does not replace process-level sandbox (enabled by default for local-AI installs).
 6. **NixOS/Alpine** — Official binary may need glibc compatibility layer.
 
 ## References

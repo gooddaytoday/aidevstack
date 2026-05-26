@@ -16,6 +16,8 @@ FORCE_CONFIG=0
 MERGE_CONFIG=0
 DO_NOT_HIDE_ENV_FILES=0
 ALLOW_NO_SANDBOX=0
+NO_NETWORK_SANDBOX=0
+SANDBOX_EXPLICIT_ENABLE=0
 UID_WIDE_STRICT_FIREWALL=0
 DRY_RUN=0
 UNINSTALL=0
@@ -98,6 +100,8 @@ Options:
                               Disable inline edit predictions, keep Agent Panel
   --allow-nonlocal-llm        Allow LLM URL not on loopback (not recommended)
   --enable-network-sandbox    Run Zed via systemd-run with localhost-only network
+                              (default for local-AI installs)
+  --no-network-sandbox        Opt out of network sandbox (not recommended)
   --allow-no-sandbox          Continue if network sandbox is unavailable
   --enable-endpoint-blocklist Best-effort /etc/hosts only blocklist for cloud endpoints
   --disable-endpoint-blocklist
@@ -119,9 +123,10 @@ Environment variables:
 
 Examples:
   ./install-zed-secure.sh --disable-ai
-  ./install-zed-secure.sh --llm-model my-model --enable-network-sandbox
+  ./install-zed-secure.sh --llm-model my-model --enable-endpoint-blocklist
   ./install-zed-secure.sh --install-deps --llm-model qwen2.5-coder \
-    --enable-network-sandbox --enable-endpoint-blocklist --dry-run
+    --enable-endpoint-blocklist --dry-run
+  ./install-zed-secure.sh --llm-model my-model --no-network-sandbox
   ./install-zed-secure.sh --channel preview --disable-ai --dry-run
 
 EOF
@@ -156,7 +161,11 @@ parse_args() {
 			;;
 		--disable-local-edit-predictions) DISABLE_LOCAL_EDIT_PREDICTIONS=1 ;;
 		--allow-nonlocal-llm) ALLOW_NONLOCAL_LLM=1 ;;
-		--enable-network-sandbox) ENABLE_NETWORK_SANDBOX=1 ;;
+		--enable-network-sandbox)
+			ENABLE_NETWORK_SANDBOX=1
+			SANDBOX_EXPLICIT_ENABLE=1
+			;;
+		--no-network-sandbox) NO_NETWORK_SANDBOX=1 ;;
 		--allow-no-sandbox) ALLOW_NO_SANDBOX=1 ;;
 		--enable-endpoint-blocklist) ENABLE_ENDPOINT_BLOCKLIST=1 ;;
 		--disable-endpoint-blocklist) DISABLE_ENDPOINT_BLOCKLIST=1 ;;
@@ -189,6 +198,26 @@ parse_args() {
 		esac
 		shift
 	done
+}
+
+apply_local_ai_sandbox_defaults() {
+	[ "$DISABLE_AI" -eq 0 ] && [ -n "$ZED_LLM_MODEL" ] || return 0
+
+	if [ "$NO_NETWORK_SANDBOX" -eq 1 ] && [ "$SANDBOX_EXPLICIT_ENABLE" -eq 1 ]; then
+		die "Cannot use --enable-network-sandbox and --no-network-sandbox together"
+	fi
+
+	if [ "$NO_NETWORK_SANDBOX" -eq 1 ]; then
+		ENABLE_NETWORK_SANDBOX=0
+		warn "Network sandbox DISABLED. Cloud egress remains possible for Zed processes."
+		warn "This is NOT recommended when working with proprietary code."
+		return 0
+	fi
+
+	if [ "$ENABLE_NETWORK_SANDBOX" -eq 0 ]; then
+		ENABLE_NETWORK_SANDBOX=1
+		log "Network sandbox enabled by default for local-AI install"
+	fi
 }
 
 # --- Channel paths (mirror zed.dev/install.sh linux()) ---
@@ -1020,7 +1049,7 @@ Post-install checks:
 IMPORTANT limitations:
   - Do NOT sign in to Zed account or add cloud API keys
   - Settings alone do NOT guarantee zero network egress with AI enabled
-  - Use --enable-network-sandbox for real cloud egress blocking
+  - Local-AI installs enable network sandbox by default; use --no-network-sandbox to opt out
   - Endpoint blocklist is hosts-only (no global nft rules) and does NOT replace sandbox
   - --uid-wide-strict-firewall is a separate dangerous option (UID-wide nft, not endpoint blocklist)
   - Training data opt-in has no settings key (UI toggle only)
@@ -1033,6 +1062,7 @@ EOF
 
 main() {
 	parse_args "$@"
+	apply_local_ai_sandbox_defaults
 
 	if [ "$UNINSTALL" -eq 1 ]; then
 		if [ "$DISABLE_ENDPOINT_BLOCKLIST" -eq 1 ] || [ "$UNINSTALL" -eq 1 ]; then

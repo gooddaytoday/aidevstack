@@ -90,9 +90,9 @@
 
 **Критерии приёмки:**
 
-- [ ] `./install-zed-secure.sh --llm-model foo` включает sandbox без доп. флага
-- [ ] `./install-zed-secure.sh --llm-model foo --no-network-sandbox` печатает warning
-- [ ] `./install-zed-secure.sh --disable-ai` не включает sandbox по умолчанию
+- [x] `./install-zed-secure.sh --llm-model foo` включает sandbox без доп. флага
+- [x] `./install-zed-secure.sh --llm-model foo --no-network-sandbox` печатает warning
+- [x] `./install-zed-secure.sh --disable-ai` не включает sandbox по умолчанию
 
 ---
 
