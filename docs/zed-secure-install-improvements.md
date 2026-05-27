@@ -142,8 +142,8 @@
 
 **Критерии приёмки:**
 
-- [ ] `http://127.0.0.1:8080/v1?api_version=2024` принимается
-- [ ] `http://evil.com/v1` отклоняется без `--allow-nonlocal-llm`
+- [x] `http://127.0.0.1:8080/v1?api_version=2024` принимается
+- [x] `http://evil.com/v1` отклоняется без `--allow-nonlocal-llm`
 
 ---
 

@@ -255,58 +255,180 @@ resolve_zed_app_paths() {
 
 # --- Validation helpers ---
 
-validate_json_string() {
-	# Reject strings that would break JSON or contain unsafe chars
+validate_model_name() {
 	val=$1
-	name=$2
 	case "$val" in
 	*\"* | *\\*)
-		die "invalid characters in $name: quotes or backslashes not allowed"
+		die "invalid characters in llm-model: quotes or backslashes not allowed"
 		;;
 	esac
-	# Allow alnum, dash, underscore, dot, colon, slash for model/provider names
-	remainder=$(printf '%s' "$val" | tr -d 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/-')
+	remainder=$(printf '%s' "$val" | tr -d 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
 	if [ -n "$remainder" ]; then
-		die "invalid characters in $name"
+		die "invalid characters in llm-model"
+	fi
+}
+
+validate_provider_name() {
+	val=$1
+	case "$val" in
+	*\"* | *\\*)
+		die "invalid characters in llm-provider-name: quotes or backslashes not allowed"
+		;;
+	esac
+	remainder=$(printf '%s' "$val" | tr -d 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-')
+	if [ -n "$remainder" ]; then
+		die "invalid characters in llm-provider-name"
 	fi
 }
 
 validate_url() {
-	# Reject strings that would break JSON or contain unsafe chars
 	val=$1
 	name=$2
 	case "$val" in
 	*\"* | *\\*)
 		die "invalid characters in $name: quotes or backslashes not allowed"
 		;;
+	http://* | https://*) ;;
+	*)
+		die "invalid $name: must start with http:// or https://"
+		;;
 	esac
-	# Allow alnum, dash, underscore, dot, colon, slash, brackets for IPv6 literals
-	remainder=$(printf '%s' "$val" | tr -d 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/-[]')
+	remainder=$(printf '%s' "$val" | tr -d 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/[]?&=%#-')
 	if [ -n "$remainder" ]; then
 		die "invalid characters in $name"
 	fi
+	case "$val" in
+	http://*)
+		rest=${val#http://}
+		;;
+	https://*)
+		rest=${val#https://}
+		;;
+	esac
+	authority=$rest
+	case "$authority" in
+	*/*)
+		authority=${authority%%/*}
+		;;
+	esac
+	case "$authority" in
+	*\?*)
+		authority=${authority%%\?*}
+		;;
+	esac
+	case "$authority" in
+	*#*)
+		authority=${authority%%#*}
+		;;
+	esac
+	case "$authority" in
+	*@*)
+		die "invalid characters in $name: userinfo (@) not allowed"
+		;;
+	esac
+}
+
+url_authority_host() {
+	url=$1
+	rest=""
+
+	case "$url" in
+	http://*)
+		rest=${url#http://}
+		;;
+	https://*)
+		rest=${url#https://}
+		;;
+	*)
+		return 1
+		;;
+	esac
+
+	authority=$rest
+	case "$authority" in
+	*/*)
+		authority=${authority%%/*}
+		;;
+	esac
+	case "$authority" in
+	*\?*)
+		authority=${authority%%\?*}
+		;;
+	esac
+	case "$authority" in
+	*#*)
+		authority=${authority%%#*}
+		;;
+	esac
+	case "$authority" in
+	*@*)
+		return 1
+		;;
+	esac
+
+	case "$authority" in
+	[[]*)
+		host=${authority%%]*}
+		host="${host}]"
+		;;
+	*:*)
+		host=${authority%:*}
+		;;
+	*)
+		host=$authority
+		;;
+	esac
+
+	[ -n "$host" ] || return 1
+	printf '%s\n' "$host"
+}
+
+is_loopback_host() {
+	host=$1
+	case "$host" in
+	127.0.0.1 | localhost | [[]::1])
+		return 0
+		;;
+	esac
+	return 1
 }
 
 is_loopback_url() {
 	url=$1
+	host=$(url_authority_host "$url") || return 1
+	is_loopback_host "$host"
+}
 
-	case "$url" in
-	http://127.0.0.1 | http://127.0.0.1:* | http://127.0.0.1/*)
-		return 0
-		;;
-	http://localhost | http://localhost:* | http://localhost/*)
-		return 0
-		;;
-	http://*)
-		rest=${url#http://}
-		case "$rest" in
-		[[]::1] | [[]::1]:* | [[]::1]/*)
-			return 0
-			;;
-		esac
+derive_completions_url() {
+	base=$1
+	query=""
+	path_base=$base
+
+	case "$path_base" in
+	*#*)
+		path_base=${path_base%%#*}
 		;;
 	esac
-	return 1
+	case "$path_base" in
+	*\?*)
+		query=${path_base#*\?}
+		path_base=${path_base%%\?*}
+		;;
+	esac
+
+	case "$path_base" in
+	*/v1)
+		completions="${path_base%/}/completions"
+		;;
+	*)
+		completions="${path_base}/completions"
+		;;
+	esac
+
+	if [ -n "$query" ]; then
+		completions="${completions}?${query}"
+	fi
+	printf '%s\n' "$completions"
 }
 
 validate_llm_urls() {
@@ -316,19 +438,12 @@ validate_llm_urls() {
 
 	[ -n "$ZED_LLM_MODEL" ] || die "--llm-model is required unless --disable-ai is set"
 
-	validate_json_string "$ZED_LLM_MODEL" "llm-model"
-	validate_json_string "$ZED_LLM_PROVIDER_NAME" "llm-provider-name"
+	validate_model_name "$ZED_LLM_MODEL"
+	validate_provider_name "$ZED_LLM_PROVIDER_NAME"
 	validate_url "$ZED_LLM_API_URL" "llm-api-url"
 
 	if [ -z "$ZED_LLM_COMPLETIONS_URL" ]; then
-		case "$ZED_LLM_API_URL" in
-		*/v1)
-			ZED_LLM_COMPLETIONS_URL="${ZED_LLM_API_URL%/}/completions"
-			;;
-		*)
-			ZED_LLM_COMPLETIONS_URL="${ZED_LLM_API_URL}/completions"
-			;;
-		esac
+		ZED_LLM_COMPLETIONS_URL=$(derive_completions_url "$ZED_LLM_API_URL")
 	fi
 	validate_url "$ZED_LLM_COMPLETIONS_URL" "llm-completions-url"
 
@@ -1057,6 +1172,7 @@ EOF
 
 	if [ "$DISABLE_AI" -eq 0 ]; then
 		printf 'LLM API:    %s\n' "$ZED_LLM_API_URL"
+		printf 'LLM completions: %s\n' "$ZED_LLM_COMPLETIONS_URL"
 		printf 'LLM model:  %s\n' "$ZED_LLM_MODEL"
 	fi
 
