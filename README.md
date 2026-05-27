@@ -77,6 +77,16 @@ Privacy-first installer for [Zed](https://zed.dev/) on Linux. Configures Zed for
 | `--channel CHANNEL` | Release channel: `stable`, `preview`, `nightly`, or `dev` (default: `stable`) |
 | `--version VERSION` | Zed version to install (default: `latest`) |
 
+## Dangerous options
+
+These flags weaken privacy guarantees or affect **all processes** under your user — use only with explicit intent:
+
+| Flag | Risk | Mitigation |
+|------|------|------------|
+| `--allow-nonlocal-llm` | LLM traffic can leave loopback | Keep default loopback URLs; use network sandbox |
+| `--uid-wide-strict-firewall` + `--i-accept-uid-wide-firewall` | **Blocks all outbound IPv4** for your UID via nft (browsers, git, SSH, etc.) | Requires both flags; 5-second pause unless `--yes`; remove with `sudo nft delete table inet zed_uid_strict` or `--uninstall` |
+| `--no-network-sandbox` | Zed may reach cloud endpoints | Default for local-AI installs is sandbox on |
+
 ## Release channels
 
 The installer passes `ZED_CHANNEL` to the official Zed install script. App bundle and desktop entry paths depend on the channel:
@@ -105,7 +115,7 @@ Privacy and AI defaults applied by the template:
 - `auto_update: false` — no update checks
 - `show_sign_in: false` — hide sign-in button
 - Local OpenAI-compatible provider on loopback only
-- Agent tools: `fetch` and `search_web` denied; sensitive file paths blocked
+- Agent tools: `fetch` and `search_web` denied; sensitive file paths blocked (written even with `--disable-ai` for defense-in-depth)
 - Optional: `.env` and secrets excluded from file tree
 
 ## Launch
@@ -146,6 +156,7 @@ Supported bundle names follow upstream: `zed-linux-x86_64.tar.gz` or `zed-linux-
 ## Verification
 
 ```sh
+make test          # or: ./tests/run.sh
 sh -n scripts/install-zed-secure.sh
 shellcheck -s sh scripts/install-zed-secure.sh   # if installed
 grep -E 'telemetry|auto_update|show_sign_in' ~/.config/zed/settings.json

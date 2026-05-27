@@ -270,6 +270,14 @@
 2. Большой warning + 5-секундная пауза (или `--yes`).
 3. README: отдельная секция «Dangerous options».
 
+**Критерии приёмки:**
+
+- [x] Без `--i-accept-uid-wide-firewall` nft rules не применяются
+- [x] С обоими флагами — warning + 5s pause (или `--yes`)
+- [x] README секция «Dangerous options»
+
+**Реализация:** `validate_uid_wide_firewall_flags()` + расширенный warning/countdown в `apply_uid_wide_strict_firewall()`; флаги `--i-accept-uid-wide-firewall`, `--yes`. Тест: `tests/test_uid_firewall_confirm.sh`.
+
 ---
 
 ### R13. Agent tool permissions при `--disable-ai`
@@ -278,6 +286,14 @@
 
 1. Всегда писать `agent.tool_permissions` с deny для `fetch`/`search_web`, даже при `disable_ai: true`.
 2. Defense-in-depth если пользователь позже включит AI через UI.
+
+**Критерии приёмки:**
+
+- [x] `--disable-ai` → settings содержит `agent.tool_permissions` с deny fetch/search_web
+- [x] `--merge-config --disable-ai` перезаписывает старые agent permissions
+- [x] `jq empty` проходит
+
+**Реализация:** `agent_tool_permissions_json` всегда в `generate_settings_content()`; `merge_settings_json()` всегда `.agent = $new.agent`. Тест: `tests/test_agent_permissions_disable_ai.sh`.
 
 ---
 
@@ -300,8 +316,10 @@ tests/
 
 **Критерии приёмки:**
 
-- [ ] `make test` или `./tests/run.sh` проходит локально
-- [ ] Минимум 10 test cases для URL validation и JSON generation
+- [x] `make test` или `./tests/run.sh` проходит локально
+- [x] Минимум 10 test cases для URL validation и JSON generation
+
+**Реализация:** `tests/run.sh`, `Makefile`, `tests/test_json_generation.sh`, `tests/test_cli_parser.sh`, `tests/test_dry_run.sh`, CI `.github/workflows/test.yml`. URL validation: `tests/test_url_validation.sh` (17 кейсов).
 
 ---
 
@@ -359,7 +377,8 @@ flowchart LR
 |------|------|
 | [`scripts/install-zed-secure.sh`](../scripts/install-zed-secure.sh) | Основной installer |
 | [`README.md`](../README.md) | User-facing docs |
-| `tests/*.sh` | Будущие автотесты (R14) |
+| [`tests/run.sh`](../tests/run.sh) | Test runner (`make test`) |
+| `tests/test_*.sh` | Installer автотесты |
 
 ---
 

@@ -1,0 +1,23 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run test suite
+        run: make test
+
+      - name: ShellCheck (optional)
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y shellcheck
+          shellcheck -s sh scripts/install-zed-secure.sh

@@ -18,6 +18,8 @@ ALLOW_NO_SANDBOX=0
 NO_NETWORK_SANDBOX=0
 SANDBOX_EXPLICIT_ENABLE=0
 UID_WIDE_STRICT_FIREWALL=0
+I_ACCEPT_UID_WIDE_FIREWALL=0
+YES=0
 DRY_RUN=0
 UNINSTALL=0
 OFFLINE=0
@@ -110,6 +112,9 @@ Options:
   --disable-endpoint-blocklist
                               Remove endpoint blocklist markers
   --uid-wide-strict-firewall  Block all outbound traffic for current UID (dangerous)
+  --i-accept-uid-wide-firewall
+                              Required with --uid-wide-strict-firewall (explicit consent)
+  --yes                       Skip confirmation pause for dangerous options
   --do-not-hide-env-files     Do not exclude .env from file tree/search
   --merge-config              Merge with existing settings.json via jq
   --offline                   Fail if network fetch is required; use with ZED_BUNDLE_PATH
@@ -186,6 +191,10 @@ parse_args() {
 			UID_WIDE_STRICT_FIREWALL=1
 			INSTALL_ACTION_REQUESTED=1
 			;;
+		--i-accept-uid-wide-firewall)
+			I_ACCEPT_UID_WIDE_FIREWALL=1
+			;;
+		--yes) YES=1 ;;
 		--do-not-hide-env-files) DO_NOT_HIDE_ENV_FILES=1 ;;
 		--merge-config)
 			MERGE_CONFIG=1
@@ -240,6 +249,15 @@ finalize_install_action_flags() {
 	fi
 	if [ "$DISABLE_AI" -eq 1 ] && [ "$DISABLE_ENDPOINT_BLOCKLIST" -eq 0 ]; then
 		INSTALL_ACTION_REQUESTED=1
+	fi
+}
+
+validate_uid_wide_firewall_flags() {
+	if [ "$I_ACCEPT_UID_WIDE_FIREWALL" -eq 1 ] && [ "$UID_WIDE_STRICT_FIREWALL" -eq 0 ]; then
+		die "--i-accept-uid-wide-firewall requires --uid-wide-strict-firewall"
+	fi
+	if [ "$UID_WIDE_STRICT_FIREWALL" -eq 1 ] && [ "$I_ACCEPT_UID_WIDE_FIREWALL" -eq 0 ]; then
+		die "--uid-wide-strict-firewall requires --i-accept-uid-wide-firewall (see --help)"
 	fi
 }
 
@@ -929,7 +947,9 @@ EOF
 
 	if [ "$DISABLE_AI" -eq 0 ]; then
 		llm_config_json
-		agent_tool_permissions_json
+	fi
+	agent_tool_permissions_json
+	if [ "$DISABLE_AI" -eq 0 ]; then
 		edit_predictions_json
 	else
 		cat <<'EOF'
@@ -963,7 +983,7 @@ merge_settings_json() {
 		(if $new.session then .session = $new.session else . end) |
 		(if $new.collaboration_panel then .collaboration_panel = $new.collaboration_panel else . end) |
 		(if $new.file_scan_exclusions then .file_scan_exclusions = $new.file_scan_exclusions else . end) |
-		(if $new.agent then .agent = $new.agent else . end) |
+		.agent = $new.agent |
 		(if $new.edit_predictions then .edit_predictions = $new.edit_predictions else . end) |
 		(if $new.show_edit_predictions != null then .show_edit_predictions = $new.show_edit_predictions else . end) |
 		(if $new.language_models then .language_models = $new.language_models else . end)
@@ -1277,17 +1297,31 @@ remove_nft_blocklist() {
 apply_uid_wide_strict_firewall() {
 	[ "$UID_WIDE_STRICT_FIREWALL" -eq 1 ] || return 0
 
-	warn "UID-wide strict firewall blocks ALL outbound traffic for UID $(id -u)"
-	warn "This affects every process run by your user, not just Zed."
+	uid=$(id -u)
+	warn "DANGEROUS: UID-wide strict firewall enabled for UID $uid"
+	warn "This blocks ALL outbound IPv4 traffic for every process you run, not just Zed."
+	warn "Browsers, git, package managers, SSH, and other tools may lose network access."
+	warn "This is NOT the same as the per-process network sandbox or /etc/hosts blocklist."
+	warn "To remove: sudo nft delete table inet zed_uid_strict"
+	warn "           or run: ./install-zed-secure.sh --uninstall"
 
 	if ! have nft; then
 		die "nft required for --uid-wide-strict-firewall"
 	fi
 
-	uid=$(id -u)
 	if [ "$DRY_RUN" -eq 1 ]; then
 		log "Would create nft rules blocking outbound for uid $uid except loopback"
 		return 0
+	fi
+
+	if [ "$YES" -eq 0 ]; then
+		warn "Applying UID-wide firewall in 5 seconds... (use --yes to skip this pause)"
+		i=5
+		while [ "$i" -gt 0 ]; do
+			printf '  %s...\n' "$i" >&2
+			sleep 1
+			i=$((i - 1))
+		done
 	fi
 
 	nft_script=$(mktemp)
@@ -1393,7 +1427,7 @@ IMPORTANT limitations:
   - Endpoint blocklist is hosts-only (no global nft rules) and does NOT replace sandbox
   - Do NOT launch $ZED_APP_BIN directly; it bypasses zed-secure protections
   - Use --replace-zed-cli to make 'zed' in PATH point at zed-secure
-  - --uid-wide-strict-firewall is a separate dangerous option (UID-wide nft, not endpoint blocklist)
+  - --uid-wide-strict-firewall requires --i-accept-uid-wide-firewall (UID-wide nft, not endpoint blocklist)
   - Training data opt-in has no settings key (UI toggle only)
   - Extensions and language servers may make network requests
 
@@ -1404,6 +1438,7 @@ EOF
 
 main() {
 	parse_args "$@"
+	validate_uid_wide_firewall_flags
 	apply_local_ai_sandbox_defaults
 	finalize_install_action_flags
 
