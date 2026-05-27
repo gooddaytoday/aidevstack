@@ -59,7 +59,7 @@ Privacy-first installer for [Zed](https://zed.dev/) on Linux. Configures Zed for
 | `--install-deps` | Install system packages via apt/dnf/pacman/zypper |
 | `--disable-ai` | Set `disable_ai: true`, disable all AI |
 | `--llm-model MODEL` | Local model name (required unless `--disable-ai`) |
-| `--llm-api-url URL` | Default: `http://127.0.0.1:8080/v1` |
+| `--llm-api-url URL` | Default: `http://127.0.0.1:8080/v1` (also accepts `http://[::1]:8080/v1`) |
 | `--llm-completions-url URL` | Edit predictions endpoint (default: `{api-url}/completions`) |
 | `--disable-local-edit-predictions` | Disable inline completions, keep Agent Panel |
 | `--allow-nonlocal-llm` | Allow LLM URL not on loopback (not recommended) |

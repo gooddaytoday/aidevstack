@@ -271,12 +271,39 @@ validate_json_string() {
 	fi
 }
 
+validate_url() {
+	# Reject strings that would break JSON or contain unsafe chars
+	val=$1
+	name=$2
+	case "$val" in
+	*\"* | *\\*)
+		die "invalid characters in $name: quotes or backslashes not allowed"
+		;;
+	esac
+	# Allow alnum, dash, underscore, dot, colon, slash, brackets for IPv6 literals
+	remainder=$(printf '%s' "$val" | tr -d 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/-[]')
+	if [ -n "$remainder" ]; then
+		die "invalid characters in $name"
+	fi
+}
+
 is_loopback_url() {
 	url=$1
+
 	case "$url" in
-	http://127.0.0.1:* | http://localhost:* | http://[::1]:* | \
-	http://127.0.0.1 | http://localhost | http://[::1])
+	http://127.0.0.1 | http://127.0.0.1:* | http://127.0.0.1/*)
 		return 0
+		;;
+	http://localhost | http://localhost:* | http://localhost/*)
+		return 0
+		;;
+	http://*)
+		rest=${url#http://}
+		case "$rest" in
+		[[]::1] | [[]::1]:* | [[]::1]/*)
+			return 0
+			;;
+		esac
 		;;
 	esac
 	return 1
@@ -291,7 +318,7 @@ validate_llm_urls() {
 
 	validate_json_string "$ZED_LLM_MODEL" "llm-model"
 	validate_json_string "$ZED_LLM_PROVIDER_NAME" "llm-provider-name"
-	validate_json_string "$ZED_LLM_API_URL" "llm-api-url"
+	validate_url "$ZED_LLM_API_URL" "llm-api-url"
 
 	if [ -z "$ZED_LLM_COMPLETIONS_URL" ]; then
 		case "$ZED_LLM_API_URL" in
@@ -303,7 +330,7 @@ validate_llm_urls() {
 			;;
 		esac
 	fi
-	validate_json_string "$ZED_LLM_COMPLETIONS_URL" "llm-completions-url"
+	validate_url "$ZED_LLM_COMPLETIONS_URL" "llm-completions-url"
 
 	if [ "$ALLOW_NONLOCAL_LLM" -eq 0 ]; then
 		if ! is_loopback_url "$ZED_LLM_API_URL"; then
