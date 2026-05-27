@@ -202,7 +202,9 @@
 
 **Критерии приёмки:**
 
-- [ ] Merge не оставляет `telemetry.metrics: true` из старого конфига
+- [x] Merge не оставляет `telemetry.metrics: true` из старого конфига
+
+**Реализация:** `merge_settings_json()` с deep merge через `jq` и принудительной перезаписью security-critical keys из template. Тест: `tests/test_merge_config.sh`.
 
 ---
 
@@ -217,7 +219,12 @@
 2. Добавить `--offline` flag: fail если нужен network fetch.
 3. Документировать air-gapped workflow в README.
 
----
+**Критерии приёмки:**
+
+- [x] `ZED_BUNDLE_PATH` не вызывает `curl https://zed.dev/install.sh`
+- [x] `--offline` без bundle завершается ошибкой, если Zed не установлен
+
+**Реализация:** embedded minimal Linux install в `install_zed_from_bundle()`; флаг `--offline`. Тест: `tests/test_offline_install.sh`.
 
 ### R10. Защита от обхода wrapper
 
@@ -231,9 +238,9 @@
 
 **Критерии приёмки:**
 
-- [ ] После install `which zed` указывает на `zed-secure` (если включён opt-in `--replace-zed-cli`)
+- [x] После install `which zed` указывает на `zed-secure` (если включён opt-in `--replace-zed-cli`)
 
----
+**Реализация:** opt-in `--replace-zed-cli` с backup/restore `$ZED_BIN_DIR/zed`. Тест: `tests/test_replace_zed_cli.sh`.
 
 ### R11. `--disable-endpoint-blocklist` без reinstall
 
@@ -246,7 +253,10 @@
 
 **Критерии приёмки:**
 
-- [ ] `./install-zed-secure.sh --disable-endpoint-blocklist` не трогает settings/wrapper
+- [x] `./install-zed-secure.sh --disable-endpoint-blocklist` не трогает settings/wrapper
+- [x] `./install-zed-secure.sh --disable-endpoint-blocklist --disable-ai` не запускает full install
+
+**Реализация:** `INSTALL_ACTION_REQUESTED` + `finalize_install_action_flags()`; early exit после blocklist removal. Тест: `tests/test_disable_blocklist_only.sh`.
 
 ---
 

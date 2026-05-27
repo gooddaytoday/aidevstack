@@ -67,8 +67,11 @@ Privacy-first installer for [Zed](https://zed.dev/) on Linux. Configures Zed for
 | `--no-network-sandbox` | Opt out of network sandbox (not recommended for proprietary code) |
 | `--allow-no-sandbox` | Continue if sandbox unavailable (local-AI default expects sandbox) |
 | `--enable-endpoint-blocklist` | Add `/etc/hosts` blocklist for cloud endpoints (hosts only) |
+| `--disable-endpoint-blocklist` | Remove `/etc/hosts` blocklist markers only (no settings/wrapper changes unless other install flags are passed) |
 | `--do-not-hide-env-files` | Keep `.env` visible in file tree (still protected from AI writes) |
-| `--merge-config` | Shallow-merge installer template into existing `settings.json` via `jq` (requires `jq`) |
+| `--merge-config` | Deep-merge installer template into existing `settings.json` via `jq`; security keys always overwritten (requires `jq`) |
+| `--offline` | Fail if a network fetch would be required; use with `ZED_BUNDLE_PATH` in air-gapped environments |
+| `--replace-zed-cli` | Replace `~/.local/bin/zed` with a symlink to `zed-secure` (opt-in; backs up existing `zed`) |
 | `--dry-run` | Print actions without executing |
 | `--uninstall` | Remove wrapper, desktop patches, blocklist |
 | `--channel CHANNEL` | Release channel: `stable`, `preview`, `nightly`, or `dev` (default: `stable`) |
@@ -92,7 +95,7 @@ The installer passes `ZED_CHANNEL` to the official Zed install script. App bundl
 Written to `~/.config/zed/settings.json` **before first launch** (or on each install run):
 
 - **Existing file:** the installer **overwrites** `settings.json` with the secure template. A timestamped backup is created first: `settings.json.bak.<YYYYMMDDHHMMSS>`.
-- **Preserve custom keys:** use `--merge-config` to shallow-merge the template into your existing file (nested keys may not merge as expected until deep-merge support lands; see improvement plan R8).
+- **Preserve custom keys:** use `--merge-config` to deep-merge the template into your existing file. Security-critical keys (`telemetry`, `disable_ai`, `auto_update`, `title_bar`, `agent`, `edit_predictions`, and related AI settings) are always taken from the installer template.
 - **Dry-run:** logs backup and write actions without modifying `settings.json`.
 
 Privacy and AI defaults applied by the template:
@@ -107,13 +110,15 @@ Privacy and AI defaults applied by the template:
 
 ## Launch
 
-After install, always use the secure wrapper:
+After install, use the secure wrapper:
 
 ```sh
 zed-secure /path/to/project
 ```
 
 Or open Zed from the application menu (desktop entry is patched automatically).
+
+Optional: pass `--replace-zed-cli` during install to make `zed` in `~/.local/bin` point at `zed-secure` as well. The upstream app binary (for example `~/.local/zed.app/bin/zed`) can still be launched directly and **bypasses** env key clearing and network sandbox — do not use it for secure workflows.
 
 ## Environment Variables
 
@@ -122,8 +127,21 @@ export ZED_LLM_MODEL=my-model
 export ZED_LLM_API_URL=http://127.0.0.1:8080/v1
 export ZED_CHANNEL=stable   # stable | preview | nightly | dev
 export ZED_VERSION=latest
-export ZED_BUNDLE_PATH=/path/to/zed-linux-x86_64.tar.gz  # offline install
+export ZED_BUNDLE_PATH=/path/to/zed-linux-x86_64.tar.gz  # local tarball for offline install
 ```
+
+## Offline / air-gapped install
+
+For machines without access to `zed.dev`, download the official Linux tarball on a connected host, transfer it, then install locally:
+
+```sh
+export ZED_BUNDLE_PATH=/path/to/zed-linux-x86_64.tar.gz
+./scripts/install-zed-secure.sh --disable-ai --offline
+```
+
+With `ZED_BUNDLE_PATH` set, the installer extracts the tarball directly (no `curl` to upstream install script). `--offline` makes network fetch a hard error when a local bundle or existing installation is unavailable.
+
+Supported bundle names follow upstream: `zed-linux-x86_64.tar.gz` or `zed-linux-aarch64.tar.gz`. Channel-specific app directories (`zed.app`, `zed-preview.app`, etc.) are handled automatically via `--channel`.
 
 ## Verification
 

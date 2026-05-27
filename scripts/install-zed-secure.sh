@@ -20,6 +20,9 @@ SANDBOX_EXPLICIT_ENABLE=0
 UID_WIDE_STRICT_FIREWALL=0
 DRY_RUN=0
 UNINSTALL=0
+OFFLINE=0
+REPLACE_ZED_CLI=0
+INSTALL_ACTION_REQUESTED=0
 
 ZED_CHANNEL="${ZED_CHANNEL:-stable}"
 ZED_VERSION="${ZED_VERSION:-latest}"
@@ -34,6 +37,7 @@ ZED_CONFIG_DIR="$XDG_CONFIG_HOME/zed"
 ZED_SETTINGS="$ZED_CONFIG_DIR/settings.json"
 ZED_BIN_DIR="$HOME/.local/bin"
 ZED_SECURE="$ZED_BIN_DIR/zed-secure"
+ZED_CLI="$ZED_BIN_DIR/zed"
 ZED_APP_DIR=""
 ZED_APP_BIN=""
 ZED_DESKTOP_ID=""
@@ -108,6 +112,8 @@ Options:
   --uid-wide-strict-firewall  Block all outbound traffic for current UID (dangerous)
   --do-not-hide-env-files     Do not exclude .env from file tree/search
   --merge-config              Merge with existing settings.json via jq
+  --offline                   Fail if network fetch is required; use with ZED_BUNDLE_PATH
+  --replace-zed-cli           Replace ~/.local/bin/zed symlink with zed-secure (opt-in)
   --channel CHANNEL           Zed release channel: stable|preview|nightly|dev (default: stable)
   --version VERSION           Zed version (default: latest)
   --dry-run                   Print actions without executing
@@ -126,6 +132,7 @@ Examples:
     --enable-endpoint-blocklist --dry-run
   ./install-zed-secure.sh --llm-model my-model --no-network-sandbox
   ./install-zed-secure.sh --channel preview --disable-ai --dry-run
+  ZED_BUNDLE_PATH=/path/to/zed-linux-x86_64.tar.gz ./install-zed-secure.sh --disable-ai --offline
 
 EOF
 }
@@ -135,12 +142,16 @@ EOF
 parse_args() {
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
-		--install-deps) INSTALL_DEPS=1 ;;
+		--install-deps)
+			INSTALL_DEPS=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
 		--disable-ai) DISABLE_AI=1 ;;
 		--llm-model)
 			shift
 			[ "$#" -gt 0 ] || die "--llm-model requires an argument"
 			ZED_LLM_MODEL=$1
+			INSTALL_ACTION_REQUESTED=1
 			;;
 		--llm-api-url)
 			shift
@@ -162,23 +173,43 @@ parse_args() {
 		--enable-network-sandbox)
 			ENABLE_NETWORK_SANDBOX=1
 			SANDBOX_EXPLICIT_ENABLE=1
+			INSTALL_ACTION_REQUESTED=1
 			;;
 		--no-network-sandbox) NO_NETWORK_SANDBOX=1 ;;
 		--allow-no-sandbox) ALLOW_NO_SANDBOX=1 ;;
-		--enable-endpoint-blocklist) ENABLE_ENDPOINT_BLOCKLIST=1 ;;
+		--enable-endpoint-blocklist)
+			ENABLE_ENDPOINT_BLOCKLIST=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
 		--disable-endpoint-blocklist) DISABLE_ENDPOINT_BLOCKLIST=1 ;;
-		--uid-wide-strict-firewall) UID_WIDE_STRICT_FIREWALL=1 ;;
+		--uid-wide-strict-firewall)
+			UID_WIDE_STRICT_FIREWALL=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
 		--do-not-hide-env-files) DO_NOT_HIDE_ENV_FILES=1 ;;
-		--merge-config) MERGE_CONFIG=1 ;;
+		--merge-config)
+			MERGE_CONFIG=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
+		--offline)
+			OFFLINE=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
+		--replace-zed-cli)
+			REPLACE_ZED_CLI=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
 		--channel)
 			shift
 			[ "$#" -gt 0 ] || die "--channel requires an argument"
 			ZED_CHANNEL=$1
+			INSTALL_ACTION_REQUESTED=1
 			;;
 		--version)
 			shift
 			[ "$#" -gt 0 ] || die "--version requires an argument"
 			ZED_VERSION=$1
+			INSTALL_ACTION_REQUESTED=1
 			;;
 		--dry-run) DRY_RUN=1 ;;
 		--uninstall) UNINSTALL=1 ;;
@@ -195,6 +226,21 @@ parse_args() {
 		esac
 		shift
 	done
+}
+
+finalize_install_action_flags() {
+	if [ -n "$ZED_LLM_MODEL" ]; then
+		INSTALL_ACTION_REQUESTED=1
+	fi
+	if [ "$ZED_CHANNEL" != "stable" ]; then
+		INSTALL_ACTION_REQUESTED=1
+	fi
+	if [ "$ZED_VERSION" != "latest" ]; then
+		INSTALL_ACTION_REQUESTED=1
+	fi
+	if [ "$DISABLE_AI" -eq 1 ] && [ "$DISABLE_ENDPOINT_BLOCKLIST" -eq 0 ]; then
+		INSTALL_ACTION_REQUESTED=1
+	fi
 }
 
 apply_local_ai_sandbox_defaults() {
@@ -670,6 +716,66 @@ check_path() {
 	esac
 }
 
+install_zed_from_network() {
+	run env ZED_CHANNEL="$ZED_CHANNEL" ZED_VERSION="$ZED_VERSION" \
+		sh -c 'curl -f https://zed.dev/install.sh | sh'
+}
+
+install_zed_from_bundle() {
+	bundle=$1
+
+	if [ "$DRY_RUN" -eq 0 ] && [ ! -f "$bundle" ]; then
+		die "ZED_BUNDLE_PATH not found: $bundle"
+	fi
+
+	resolve_zed_app_paths
+
+	suffix=""
+	case "$ZED_CHANNEL" in
+	stable) suffix="" ;;
+	*) suffix="-$ZED_CHANNEL" ;;
+	esac
+
+	log "Installing Zed from local bundle: $bundle"
+	run rm -rf "$ZED_APP_DIR"
+	run mkdir -p "$ZED_APP_DIR"
+	run mkdir -p "$ZED_BIN_DIR" "$XDG_DATA_HOME/applications"
+	run tar -xzf "$bundle" -C "$HOME/.local/"
+
+	resolve_zed_app_paths
+
+	if [ -x "$ZED_APP_DIR/bin/zed" ]; then
+		zed_bin="$ZED_APP_DIR/bin/zed"
+	elif [ -x "$ZED_APP_DIR/bin/cli" ]; then
+		zed_bin="$ZED_APP_DIR/bin/cli"
+	else
+		zed_bin="$ZED_APP_DIR/bin/zed"
+	fi
+
+	run ln -sf "$zed_bin" "$ZED_BIN_DIR/zed"
+
+	desktop_file="$XDG_DATA_HOME/applications/${ZED_DESKTOP_ID}.desktop"
+	src_dir="$ZED_APP_DIR/share/applications"
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would install desktop entry: $desktop_file"
+		return 0
+	fi
+
+	if [ -f "$src_dir/${ZED_DESKTOP_ID}.desktop" ]; then
+		run cp "$src_dir/${ZED_DESKTOP_ID}.desktop" "$desktop_file"
+	elif [ -f "$src_dir/zed${suffix}.desktop" ]; then
+		run cp "$src_dir/zed${suffix}.desktop" "$desktop_file"
+	else
+		warn "Desktop entry not found in bundle; skip desktop install"
+		return 0
+	fi
+
+	sed -i "s|Icon=zed|Icon=$ZED_APP_DIR/share/icons/hicolor/512x512/apps/zed.png|g" "$desktop_file"
+	sed -i "s|Exec=zed|Exec=$zed_bin|g" "$desktop_file"
+	log "Installed desktop entry: $desktop_file"
+}
+
 install_zed() {
 	log "Installing Zed (channel=$ZED_CHANNEL version=$ZED_VERSION)"
 
@@ -680,12 +786,16 @@ install_zed() {
 		return 0
 	fi
 
+	if [ "$OFFLINE" -eq 1 ] && [ -z "${ZED_BUNDLE_PATH:-}" ]; then
+		die "--offline requires ZED_BUNDLE_PATH when Zed is not already installed"
+	fi
+
 	if [ -n "${ZED_BUNDLE_PATH:-}" ]; then
-		run env ZED_CHANNEL="$ZED_CHANNEL" ZED_VERSION="$ZED_VERSION" ZED_BUNDLE_PATH="$ZED_BUNDLE_PATH" \
-			sh -c 'curl -f https://zed.dev/install.sh | sh'
+		install_zed_from_bundle "$ZED_BUNDLE_PATH"
+	elif [ "$OFFLINE" -eq 1 ]; then
+		die "--offline requires ZED_BUNDLE_PATH when Zed is not already installed"
 	else
-		run env ZED_CHANNEL="$ZED_CHANNEL" ZED_VERSION="$ZED_VERSION" \
-			sh -c 'curl -f https://zed.dev/install.sh | sh'
+		install_zed_from_network
 	fi
 
 	if [ "$DRY_RUN" -eq 0 ] && [ ! -x "$ZED_APP_BIN" ]; then
@@ -840,6 +950,26 @@ backup_settings() {
 	fi
 }
 
+merge_settings_json() {
+	existing=$1
+	template=$2
+	jq -s '
+		.[0] as $old | .[1] as $new |
+		($old * $new) |
+		.auto_update = $new.auto_update |
+		.disable_ai = $new.disable_ai |
+		.telemetry = $new.telemetry |
+		.title_bar = $new.title_bar |
+		(if $new.session then .session = $new.session else . end) |
+		(if $new.collaboration_panel then .collaboration_panel = $new.collaboration_panel else . end) |
+		(if $new.file_scan_exclusions then .file_scan_exclusions = $new.file_scan_exclusions else . end) |
+		(if $new.agent then .agent = $new.agent else . end) |
+		(if $new.edit_predictions then .edit_predictions = $new.edit_predictions else . end) |
+		(if $new.show_edit_predictions != null then .show_edit_predictions = $new.show_edit_predictions else . end) |
+		(if $new.language_models then .language_models = $new.language_models else . end)
+	' "$existing" "$template"
+}
+
 write_settings() {
 	run mkdir -p "$ZED_CONFIG_DIR"
 
@@ -851,7 +981,7 @@ write_settings() {
 		tmp=$(mktemp)
 		generate_settings_content >"$tmp"
 		if [ "$DRY_RUN" -eq 0 ]; then
-			jq -s 'add' "$ZED_SETTINGS" "$tmp" >"${ZED_SETTINGS}.new"
+			merge_settings_json "$ZED_SETTINGS" "$tmp" >"${ZED_SETTINGS}.new"
 			mv "${ZED_SETTINGS}.new" "$ZED_SETTINGS"
 		fi
 		rm -f "$tmp"
@@ -981,6 +1111,51 @@ WRAPPER_TAIL
 
 	run chmod +x "$ZED_SECURE"
 	log "Created wrapper: $ZED_SECURE"
+}
+
+replace_zed_cli_symlink() {
+	[ "$REPLACE_ZED_CLI" -eq 1 ] || return 0
+
+	run mkdir -p "$ZED_BIN_DIR"
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would replace $ZED_CLI with symlink to $ZED_SECURE"
+		if [ -e "$ZED_CLI" ] || [ -L "$ZED_CLI" ]; then
+			log "Would backup existing $ZED_CLI"
+		fi
+		run ln -sf "$ZED_SECURE" "$ZED_CLI"
+		return 0
+	fi
+
+	if [ -e "$ZED_CLI" ] || [ -L "$ZED_CLI" ]; then
+		current_target=$(readlink "$ZED_CLI" 2>/dev/null || true)
+		if [ "$current_target" = "$ZED_SECURE" ]; then
+			log "$ZED_CLI already points to zed-secure"
+			return 0
+		fi
+		backup="$ZED_CLI.bak.zed-secure.$(date +%Y%m%d%H%M%S)"
+		run cp -a "$ZED_CLI" "$backup"
+		log "Backed up existing $ZED_CLI to $backup"
+	fi
+
+	run ln -sf "$ZED_SECURE" "$ZED_CLI"
+	log "Replaced $ZED_CLI -> $ZED_SECURE"
+}
+
+restore_zed_cli_symlink() {
+	latest=$(ls -t "$ZED_CLI.bak.zed-secure."* 2>/dev/null | head -n1 || true)
+	if [ -n "$latest" ]; then
+		run rm -f "$ZED_CLI"
+		run cp -a "$latest" "$ZED_CLI"
+		run rm -f "$latest"
+		log "Restored $ZED_CLI from backup"
+		return 0
+	fi
+
+	if [ -L "$ZED_CLI" ] && [ "$(readlink "$ZED_CLI")" = "$ZED_SECURE" ]; then
+		run rm -f "$ZED_CLI"
+		log "Removed zed-secure symlink at $ZED_CLI"
+	fi
 }
 
 patch_desktop_entry() {
@@ -1141,6 +1316,8 @@ do_uninstall() {
 		run rm -f "$ZED_SECURE"
 	fi
 
+	restore_zed_cli_symlink
+
 	# Restore desktop from latest backup if present (all known release channels)
 	for desktop_id in dev.zed.Zed dev.zed.Zed-Preview dev.zed.Zed-Nightly dev.zed.Zed-Dev; do
 		for candidate in \
@@ -1183,11 +1360,26 @@ EOF
 
 	printf 'Sandbox:    %s\n' "$( [ "$ENABLE_NETWORK_SANDBOX" -eq 1 ] && echo "enabled (systemd-run localhost-only)" || echo "disabled" )"
 	printf 'Blocklist:  %s\n' "$( [ "$ENABLE_ENDPOINT_BLOCKLIST" -eq 1 ] && echo "enabled (hosts only; no global nft rules)" || echo "disabled" )"
+	if [ "$REPLACE_ZED_CLI" -eq 1 ]; then
+		printf 'CLI alias:  %s -> %s\n' "$ZED_CLI" "$ZED_SECURE"
+	fi
 
 	cat <<'EOF'
 
 Launch Zed securely:
   zed-secure .
+EOF
+
+	if [ "$REPLACE_ZED_CLI" -eq 1 ]; then
+		cat <<'EOF'
+  zed .                    # also routes through zed-secure (--replace-zed-cli)
+EOF
+	fi
+
+	cat <<EOF
+
+Direct launch bypasses wrapper (no env key clearing / sandbox):
+  $ZED_APP_BIN
 
 Post-install checks:
   sh -n scripts/install-zed-secure.sh
@@ -1199,6 +1391,8 @@ IMPORTANT limitations:
   - Settings alone do NOT guarantee zero network egress with AI enabled
   - Local-AI installs enable network sandbox by default; use --no-network-sandbox to opt out
   - Endpoint blocklist is hosts-only (no global nft rules) and does NOT replace sandbox
+  - Do NOT launch $ZED_APP_BIN directly; it bypasses zed-secure protections
+  - Use --replace-zed-cli to make 'zed' in PATH point at zed-secure
   - --uid-wide-strict-firewall is a separate dangerous option (UID-wide nft, not endpoint blocklist)
   - Training data opt-in has no settings key (UI toggle only)
   - Extensions and language servers may make network requests
@@ -1211,6 +1405,7 @@ EOF
 main() {
 	parse_args "$@"
 	apply_local_ai_sandbox_defaults
+	finalize_install_action_flags
 
 	if [ "$UNINSTALL" -eq 1 ]; then
 		if [ "$DISABLE_ENDPOINT_BLOCKLIST" -eq 1 ] || [ "$UNINSTALL" -eq 1 ]; then
@@ -1224,8 +1419,7 @@ main() {
 	if [ "$DISABLE_ENDPOINT_BLOCKLIST" -eq 1 ]; then
 		remove_hosts_blocklist
 		remove_nft_blocklist
-		if [ "$ENABLE_ENDPOINT_BLOCKLIST" -eq 0 ] && [ "$DISABLE_AI" -eq 0 ] && [ -z "$ZED_LLM_MODEL" ] && [ "$INSTALL_DEPS" -eq 0 ]; then
-			# Only blocklist removal requested
+		if [ "$INSTALL_ACTION_REQUESTED" -eq 0 ]; then
 			log "Endpoint blocklist removed"
 			exit 0
 		fi
@@ -1258,6 +1452,7 @@ main() {
 	fi
 	write_settings
 	write_zed_secure_wrapper
+	replace_zed_cli_symlink
 	patch_desktop_entry
 
 	apply_hosts_blocklist
