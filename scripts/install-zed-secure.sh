@@ -12,7 +12,6 @@ ALLOW_NONLOCAL_LLM=0
 ENABLE_NETWORK_SANDBOX=0
 ENABLE_ENDPOINT_BLOCKLIST=0
 DISABLE_ENDPOINT_BLOCKLIST=0
-FORCE_CONFIG=0
 MERGE_CONFIG=0
 DO_NOT_HIDE_ENV_FILES=0
 ALLOW_NO_SANDBOX=0
@@ -108,7 +107,6 @@ Options:
                               Remove endpoint blocklist markers
   --uid-wide-strict-firewall  Block all outbound traffic for current UID (dangerous)
   --do-not-hide-env-files     Do not exclude .env from file tree/search
-  --force-config              Overwrite existing settings.json (with backup)
   --merge-config              Merge with existing settings.json via jq
   --channel CHANNEL           Zed release channel: stable|preview|nightly|dev (default: stable)
   --version VERSION           Zed version (default: latest)
@@ -171,7 +169,6 @@ parse_args() {
 		--disable-endpoint-blocklist) DISABLE_ENDPOINT_BLOCKLIST=1 ;;
 		--uid-wide-strict-firewall) UID_WIDE_STRICT_FIREWALL=1 ;;
 		--do-not-hide-env-files) DO_NOT_HIDE_ENV_FILES=1 ;;
-		--force-config) FORCE_CONFIG=1 ;;
 		--merge-config) MERGE_CONFIG=1 ;;
 		--channel)
 			shift
@@ -858,9 +855,6 @@ write_settings() {
 			mv "${ZED_SETTINGS}.new" "$ZED_SETTINGS"
 		fi
 		rm -f "$tmp"
-	elif [ -f "$ZED_SETTINGS" ] && [ "$FORCE_CONFIG" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
-		backup_settings
-		generate_settings_content >"$ZED_SETTINGS"
 	else
 		if [ -f "$ZED_SETTINGS" ]; then
 			backup_settings

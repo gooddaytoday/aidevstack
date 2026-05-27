@@ -68,8 +68,7 @@ Privacy-first installer for [Zed](https://zed.dev/) on Linux. Configures Zed for
 | `--allow-no-sandbox` | Continue if sandbox unavailable (local-AI default expects sandbox) |
 | `--enable-endpoint-blocklist` | Add `/etc/hosts` blocklist for cloud endpoints (hosts only) |
 | `--do-not-hide-env-files` | Keep `.env` visible in file tree (still protected from AI writes) |
-| `--force-config` | Overwrite existing settings (with backup) |
-| `--merge-config` | Merge with existing settings via `jq` |
+| `--merge-config` | Shallow-merge installer template into existing `settings.json` via `jq` (requires `jq`) |
 | `--dry-run` | Print actions without executing |
 | `--uninstall` | Remove wrapper, desktop patches, blocklist |
 | `--channel CHANNEL` | Release channel: `stable`, `preview`, `nightly`, or `dev` (default: `stable`) |
@@ -90,7 +89,13 @@ The installer passes `ZED_CHANNEL` to the official Zed install script. App bundl
 
 ## What Gets Configured
 
-Written to `~/.config/zed/settings.json` **before first launch**:
+Written to `~/.config/zed/settings.json` **before first launch** (or on each install run):
+
+- **Existing file:** the installer **overwrites** `settings.json` with the secure template. A timestamped backup is created first: `settings.json.bak.<YYYYMMDDHHMMSS>`.
+- **Preserve custom keys:** use `--merge-config` to shallow-merge the template into your existing file (nested keys may not merge as expected until deep-merge support lands; see improvement plan R8).
+- **Dry-run:** logs backup and write actions without modifying `settings.json`.
+
+Privacy and AI defaults applied by the template:
 
 - `telemetry.diagnostics: false` — no crash reports
 - `telemetry.metrics: false` — no usage metrics

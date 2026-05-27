@@ -16,7 +16,7 @@
 | P1 | R4 | Исправить валидацию IPv6 loopback URL | Ложный reject `http://[::1]:...` |
 | P1 | R5 | Расширить валидацию URL (query/path) | Валидные LLM endpoints отклоняются |
 | P1 | R6 | Сделать nft blocklist идempotent | Повторный install падает на `set -eu` |
-| P2 | R7 | Починить или убрать `--force-config` | Вводящий в заблуждение CLI |
+| P2 | R7 | Починить или убрать `--force-config` | Вводящий в заблуждение CLI (done: вариант B) |
 | P2 | R8 | Deep merge для `--merge-config` | Частично сохраняются небезопасные настройки |
 | P2 | R9 | Offline install через `ZED_BUNDLE_PATH` | Лишний network fetch в air-gapped среде |
 | P2 | R10 | Защита от обхода wrapper | Прямой запуск `zed` минует sandbox и unset keys |
@@ -178,6 +178,16 @@
 - **C:** `--force-config` = skip prompt (если добавить interactive confirm по умолчанию)
 
 **Рекомендация:** вариант B — убрать флаг, оставить backup always; документировать в README.
+
+**Реализация:** вариант B — флаг удалён из CLI; `write_settings()` всегда делает backup перед overwrite (кроме `--merge-config`). Тест: `tests/test_force_config_removed.sh`.
+
+**Критерии приёмки:**
+
+- [x] `--force-config` отсутствует в `--help` и отклоняется как unknown option
+- [x] `write_settings()` без ветки `FORCE_CONFIG` — одна overwrite-ветка с backup
+- [x] README описывает backup-on-overwrite и роль `--merge-config`
+- [x] `tests/test_force_config_removed.sh` проходит локально
+- [x] Поведение install без `--merge-config` для существующего файла не регрессирует (backup + overwrite)
 
 ---
 
