@@ -676,6 +676,13 @@ check_path() {
 install_zed() {
 	log "Installing Zed (channel=$ZED_CHANNEL version=$ZED_VERSION)"
 
+	if [ "$DRY_RUN" -eq 0 ] && [ -n "$ZED_APP_BIN" ] && [ -x "$ZED_APP_BIN" ]; then
+		log "Zed already installed at $ZED_APP_BIN; skipping download"
+		run mkdir -p "$ZED_BIN_DIR"
+		check_path
+		return 0
+	fi
+
 	if [ -n "${ZED_BUNDLE_PATH:-}" ]; then
 		run env ZED_CHANNEL="$ZED_CHANNEL" ZED_VERSION="$ZED_VERSION" ZED_BUNDLE_PATH="$ZED_BUNDLE_PATH" \
 			sh -c 'curl -f https://zed.dev/install.sh | sh'
@@ -1088,9 +1095,13 @@ remove_nft_blocklist() {
 		return 0
 	fi
 	if [ "$(id -u)" -eq 0 ]; then
-		run nft delete table inet zed_privacy 2>/dev/null || true
+		if nft list table inet zed_privacy >/dev/null 2>&1; then
+			run nft delete table inet zed_privacy
+		fi
 	else
-		run sudo nft delete table inet zed_privacy 2>/dev/null || true
+		if sudo nft list table inet zed_privacy >/dev/null 2>&1; then
+			run sudo nft delete table inet zed_privacy
+		fi
 	fi
 }
 

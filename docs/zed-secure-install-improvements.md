@@ -159,7 +159,9 @@
 
 **Критерии приёмки:**
 
-- [ ] Два последовательных install с `--enable-endpoint-blocklist` завершаются exit 0
+- [x] Два последовательных install с `--enable-endpoint-blocklist` завершаются exit 0
+
+**Реализация:** endpoint blocklist — только `/etc/hosts`; legacy `inet zed_privacy` удаляется через `nft list table` + conditional delete. Повторный install пропускает download Zed, если бинарь уже установлен (blocklist блокирует `cloud.zed.dev`). Тест: `tests/test_blocklist_idempotency.sh`.
 
 ---
 
