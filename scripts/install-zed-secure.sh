@@ -899,7 +899,12 @@ llm_config_json() {
           "name": "$ZED_LLM_MODEL",
           "display_name": "Local LLM",
           "max_tokens": 32768,
-          "capabilities": { "tools": true, "images": false }
+          "capabilities": {
+            "tools": true,
+            "images": false,
+            "parallel_tool_calls": false,
+            "prompt_cache_key": false
+          }
         }]
       }
     }

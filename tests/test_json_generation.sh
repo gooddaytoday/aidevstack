@@ -39,12 +39,16 @@ disable_ai=$(jq -r '.disable_ai' "$settings")
 [ "$disable_ai" = "true" ] || fail "case 1: disable_ai=$disable_ai"
 printf 'OK: case 1 disable_ai=true\n'
 
-# 2. --llm-model
+# 2. --llm-model + full model capabilities (Zed 1.4+ schema)
 settings=$(run_install 'llm-model' 2 --llm-model test-model)
 if ! jq -e '.language_models.openai_compatible' "$settings" >/dev/null 2>&1; then
 	fail 'case 2: language_models missing'
 fi
-printf 'OK: case 2 language_models present\n'
+parallel=$(jq -r '.language_models.openai_compatible.LocalLLM.available_models[0].capabilities.parallel_tool_calls' "$settings")
+cache_key=$(jq -r '.language_models.openai_compatible.LocalLLM.available_models[0].capabilities.prompt_cache_key' "$settings")
+[ "$parallel" = "false" ] || fail "case 2: parallel_tool_calls=$parallel"
+[ "$cache_key" = "false" ] || fail "case 2: prompt_cache_key=$cache_key"
+printf 'OK: case 2 language_models with full capabilities\n'
 
 # 3. --disable-local-edit-predictions
 settings=$(run_install 'no-edit-predictions' 3 --llm-model m --disable-local-edit-predictions)
