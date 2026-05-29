@@ -7,6 +7,10 @@ INSTALLER="$ROOT/scripts/install-zed-secure.sh"
 
 printf '==> syntax check: %s\n' "$INSTALLER"
 sh -n "$INSTALLER"
+for preset in "$ROOT"/scripts/install-zed-no-ai.sh "$ROOT"/scripts/install-zed-local-llm.sh; do
+	printf '==> syntax check: %s\n' "$preset"
+	sh -n "$preset"
+done
 
 failed=0
 for test_script in "$ROOT"/tests/test_*.sh; do

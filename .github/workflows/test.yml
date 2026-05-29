@@ -20,4 +20,6 @@ jobs:
         continue-on-error: true
         run: |
           sudo apt-get install -y shellcheck
-          shellcheck -s sh scripts/install-zed-secure.sh
+          shellcheck -s sh scripts/install-zed-secure.sh \
+            scripts/install-zed-no-ai.sh \
+            scripts/install-zed-local-llm.sh

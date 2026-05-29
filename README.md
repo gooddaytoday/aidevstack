@@ -22,33 +22,44 @@ Privacy-first installer for [Zed](https://zed.dev/) on Linux. Configures Zed for
 
 ## Quick Start
 
+Two preset installers wrap [`install-zed-secure.sh`](scripts/install-zed-secure.sh) with common flag combinations. Extra flags (`--dry-run`, `--channel`, `--offline`, etc.) are forwarded and can override non-AI preset behavior (for example `--no-network-sandbox` on the local-LLM preset).
+
 ### No AI (maximum privacy, no local LLM)
 
 ```sh
-./scripts/install-zed-secure.sh --disable-ai
+./scripts/install-zed-no-ai.sh
 ```
+
+Always passes `--disable-ai` first; AI stays disabled even if you forward `--llm-model`.
 
 ### Local LLM with network sandbox (recommended)
 
 ```sh
+./scripts/install-zed-local-llm.sh your-model-name
+```
+
+**MODEL must be the first argument** (not `--dry-run`). Example: `./scripts/install-zed-local-llm.sh my-model --dry-run`.
+
+Preset includes: `--install-deps` (may run `sudo` on every install), loopback LLM URL, endpoint blocklist, and network sandbox (enabled automatically by the main installer). To reconfigure without installing packages, use [`install-zed-secure.sh`](scripts/install-zed-secure.sh) without `--install-deps`.
+
+### Dry run (preview actions)
+
+```sh
+./scripts/install-zed-no-ai.sh --dry-run
+./scripts/install-zed-local-llm.sh test-model --dry-run
+```
+
+### Advanced: full installer
+
+Use [`install-zed-secure.sh`](scripts/install-zed-secure.sh) when you need custom flags (see [Options](#options)):
+
+```sh
+./scripts/install-zed-secure.sh --disable-ai
 ./scripts/install-zed-secure.sh \
   --install-deps \
   --llm-model your-model-name \
   --llm-api-url 'http://127.0.0.1:8080/v1?api_version=2024' \
   --enable-endpoint-blocklist
-```
-
-### Dry run (preview actions)
-
-```sh
-./scripts/install-zed-secure.sh \
-  --llm-model test-model \
-  --dry-run
-```
-
-### Preview channel (dry run)
-
-```sh
 ./scripts/install-zed-secure.sh --channel preview --disable-ai --dry-run
 ```
 

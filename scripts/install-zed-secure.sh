@@ -94,6 +94,10 @@ Usage: install-zed-secure.sh [OPTIONS]
 
 Privacy-first Zed installer for Linux with optional local OpenAI-compatible LLM.
 
+Preset installers (simpler entry points):
+  install-zed-no-ai.sh [OPTIONS]              --disable-ai preset; OPTIONS forwarded
+  install-zed-local-llm.sh MODEL [OPTIONS]  local LLM preset (MODEL first); OPTIONS forwarded
+
 Options:
   --install-deps              Install system dependencies (requires sudo)
   --disable-ai                Disable all AI features (disable_ai=true)
@@ -131,6 +135,8 @@ Environment variables:
   XDG_CONFIG_HOME, XDG_DATA_HOME
 
 Examples:
+  ./install-zed-no-ai.sh
+  ./install-zed-local-llm.sh my-model
   ./install-zed-secure.sh --disable-ai
   ./install-zed-secure.sh --llm-model my-model --enable-endpoint-blocklist
   ./install-zed-secure.sh --install-deps --llm-model qwen2.5-coder \
