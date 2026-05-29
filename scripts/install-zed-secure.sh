@@ -4,6 +4,10 @@
 
 set -eu
 
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+# shellcheck source=zed-security-settings.sh
+. "$SCRIPT_DIR/zed-security-settings.sh"
+
 # --- Defaults (overridable via env) ---
 INSTALL_DEPS=0
 DISABLE_AI=0
@@ -13,6 +17,9 @@ ENABLE_NETWORK_SANDBOX=0
 ENABLE_ENDPOINT_BLOCKLIST=0
 DISABLE_ENDPOINT_BLOCKLIST=0
 MERGE_CONFIG=0
+REFRESH_LLM_CONFIG=0
+REPAIR_SETTINGS=0
+REGENERATE_TEMPLATE=0
 DO_NOT_HIDE_ENV_FILES=0
 ALLOW_NO_SANDBOX=0
 NO_NETWORK_SANDBOX=0
@@ -37,6 +44,10 @@ XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 ZED_CONFIG_DIR="$XDG_CONFIG_HOME/zed"
 ZED_SETTINGS="$ZED_CONFIG_DIR/settings.json"
+ZED_SETTINGS_TEMPLATE="$ZED_CONFIG_DIR/settings.zed-secure-template.json"
+ZED_SECURE_SHARE="$HOME/.local/share/zed-secure"
+ZED_ENFORCE_SCRIPT="$ZED_SECURE_SHARE/enforce-settings.sh"
+ZED_SETTINGS_TEMPLATE_SHARE="$ZED_SECURE_SHARE/settings-template.json"
 ZED_BIN_DIR="$HOME/.local/bin"
 ZED_SECURE="$ZED_BIN_DIR/zed-secure"
 ZED_CLI="$ZED_BIN_DIR/zed"
@@ -120,7 +131,10 @@ Options:
                               Required with --uid-wide-strict-firewall (explicit consent)
   --yes                       Skip confirmation pause for dangerous options
   --do-not-hide-env-files     Do not exclude .env from file tree/search
-  --merge-config              Merge with existing settings.json via jq
+  --merge-config              Full merge: security keys + language_models from template
+  --refresh-llm-config        Security overlay + overwrite language_models from template
+  --repair-settings           Re-apply privacy overlay only (no Zed reinstall)
+  --regenerate-template       With --repair-settings: overwrite template from CLI flags (risky)
   --offline                   Fail if network fetch is required; use with ZED_BUNDLE_PATH
   --replace-zed-cli           Replace ~/.local/bin/zed symlink with zed-secure (opt-in)
   --channel CHANNEL           Zed release channel: stable|preview|nightly|dev (default: stable)
@@ -133,8 +147,11 @@ Environment variables:
   ZED_CHANNEL, ZED_VERSION, ZED_BUNDLE_PATH
   ZED_LLM_MODEL, ZED_LLM_API_URL, ZED_LLM_COMPLETIONS_URL, ZED_LLM_PROVIDER_NAME
   XDG_CONFIG_HOME, XDG_DATA_HOME
+  ZED_SECURE_ENFORCE_SETTINGS  Set to 0 in zed-secure wrapper to skip privacy overlay (default: 1)
+  ZED_SECURE_ENFORCE_STRICT    Set to 1 to abort launch if privacy overlay fails (default: 0)
 
 Examples:
+  ./install-zed-secure.sh --repair-settings
   ./install-zed-no-ai.sh
   ./install-zed-local-llm.sh my-model
   ./install-zed-secure.sh --disable-ai
@@ -206,6 +223,12 @@ parse_args() {
 			MERGE_CONFIG=1
 			INSTALL_ACTION_REQUESTED=1
 			;;
+		--refresh-llm-config)
+			REFRESH_LLM_CONFIG=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
+		--repair-settings) REPAIR_SETTINGS=1 ;;
+		--regenerate-template) REGENERATE_TEMPLATE=1 ;;
 		--offline)
 			OFFLINE=1
 			INSTALL_ACTION_REQUESTED=1
@@ -982,60 +1005,160 @@ backup_settings() {
 }
 
 merge_settings_json() {
-	existing=$1
-	template=$2
-	jq -s '
-		.[0] as $old | .[1] as $new |
-		($old * $new) |
-		.auto_update = $new.auto_update |
-		.disable_ai = $new.disable_ai |
-		.telemetry = $new.telemetry |
-		.title_bar = $new.title_bar |
-		(if $new.session then .session = $new.session else . end) |
-		(if $new.collaboration_panel then .collaboration_panel = $new.collaboration_panel else . end) |
-		(if $new.file_scan_exclusions then .file_scan_exclusions = $new.file_scan_exclusions else . end) |
-		.agent = $new.agent |
-		(if $new.edit_predictions then .edit_predictions = $new.edit_predictions else . end) |
-		(if $new.show_edit_predictions != null then .show_edit_predictions = $new.show_edit_predictions else . end) |
-		(if $new.language_models then .language_models = $new.language_models else . end)
-	' "$existing" "$template"
+	full_overlay_merge "$1" "$2"
+}
+
+sync_settings_template_share() {
+	if [ ! -f "$ZED_SETTINGS_TEMPLATE" ]; then
+		return 0
+	fi
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would copy $ZED_SETTINGS_TEMPLATE -> $ZED_SETTINGS_TEMPLATE_SHARE"
+		return 0
+	fi
+	run mkdir -p "$ZED_SECURE_SHARE"
+	run cp "$ZED_SETTINGS_TEMPLATE" "$ZED_SETTINGS_TEMPLATE_SHARE"
+}
+
+write_settings_template_file() {
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would write $ZED_SETTINGS_TEMPLATE"
+	else
+		generate_settings_content >"$ZED_SETTINGS_TEMPLATE"
+		sync_settings_template_share
+	fi
+}
+
+check_zed_running() {
+	if pgrep -x zed >/dev/null 2>&1 \
+		|| pgrep -f '/zed\.app/bin/zed' >/dev/null 2>&1 \
+		|| pgrep -f '/zed-.*\.app/bin/zed' >/dev/null 2>&1; then
+		warn "Zed is running; close it before install to avoid settings.json race with the UI"
+	fi
+}
+
+install_enforce_helper() {
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would install $ZED_ENFORCE_SCRIPT"
+		log "Would sync $ZED_SETTINGS_TEMPLATE_SHARE"
+		return 0
+	fi
+	run mkdir -p "$ZED_SECURE_SHARE"
+	run cp "$SCRIPT_DIR/zed-security-settings.sh" "$ZED_ENFORCE_SCRIPT"
+	run chmod +x "$ZED_ENFORCE_SCRIPT"
+	if [ -f "$ZED_SETTINGS_TEMPLATE" ]; then
+		sync_settings_template_share
+	elif [ -f "$ZED_SETTINGS_TEMPLATE_SHARE" ] && [ ! -f "$ZED_SETTINGS_TEMPLATE" ]; then
+		run cp "$ZED_SETTINGS_TEMPLATE_SHARE" "$ZED_SETTINGS_TEMPLATE"
+		log "Restored $ZED_SETTINGS_TEMPLATE from share backup"
+	fi
 }
 
 write_settings() {
+	check_zed_running
 	run mkdir -p "$ZED_CONFIG_DIR"
+	write_settings_template_file
 
-	if [ -f "$ZED_SETTINGS" ] && [ "$MERGE_CONFIG" -eq 1 ]; then
+	if [ ! -f "$ZED_SETTINGS" ]; then
+		if [ "$DRY_RUN" -eq 1 ]; then
+			log "Would write $ZED_SETTINGS from template"
+		else
+			cp "$ZED_SETTINGS_TEMPLATE" "$ZED_SETTINGS"
+		fi
+	else
 		if ! have jq; then
-			die "--merge-config requires jq"
+			die "jq is required when updating existing settings.json (install jq; python3 recommended if Zed saved JSONC)"
 		fi
 		backup_settings
-		tmp=$(mktemp)
-		generate_settings_content >"$tmp"
-		if [ "$DRY_RUN" -eq 0 ]; then
-			merge_settings_json "$ZED_SETTINGS" "$tmp" >"${ZED_SETTINGS}.new"
-			mv "${ZED_SETTINGS}.new" "$ZED_SETTINGS"
-		fi
-		rm -f "$tmp"
-	else
-		if [ -f "$ZED_SETTINGS" ]; then
-			backup_settings
+		refresh_llm=0
+		if [ "$MERGE_CONFIG" -eq 1 ] || [ "$REFRESH_LLM_CONFIG" -eq 1 ]; then
+			refresh_llm=1
 		fi
 		if [ "$DRY_RUN" -eq 1 ]; then
-			log "Would write $ZED_SETTINGS"
+			if [ "$refresh_llm" -eq 1 ]; then
+				log "Would refresh security + language_models in $ZED_SETTINGS"
+			else
+				log "Would apply security-only overlay to $ZED_SETTINGS"
+			fi
+			ZED_ENFORCE_DRY_RUN=1 ZED_ENFORCE_REFRESH_LLM=$refresh_llm \
+				enforce_security_settings "$ZED_SETTINGS" "$ZED_SETTINGS_TEMPLATE" || true
 		else
-			generate_settings_content >"$ZED_SETTINGS"
+			enforce_rc=0
+			ZED_ENFORCE_DRY_RUN=0 ZED_ENFORCE_REFRESH_LLM=$refresh_llm \
+				enforce_security_settings "$ZED_SETTINGS" "$ZED_SETTINGS_TEMPLATE" || enforce_rc=$?
+			if [ "$enforce_rc" -eq 1 ]; then
+				die "Failed to apply settings overlay (close Zed and retry; install python3 for JSONC)"
+			fi
+			if [ "$enforce_rc" -eq 2 ]; then
+				warn "Partial privacy fix (sed only). Close Zed and run: $0 --repair-settings"
+			fi
 		fi
 	fi
 
-	if [ "$DRY_RUN" -eq 0 ] && have jq && [ -f "$ZED_SETTINGS" ]; then
-		if jq empty "$ZED_SETTINGS" 2>/dev/null; then
+	if [ "$DRY_RUN" -eq 0 ] && [ -f "$ZED_SETTINGS" ]; then
+		if have jq && jq empty "$ZED_SETTINGS" 2>/dev/null; then
 			log "settings.json validated with jq"
 		else
-			warn "settings.json failed jq validation"
+			warn "settings.json failed jq validation (Zed JSONC? zed-secure will try sed fallback)"
 		fi
-	elif [ "$DRY_RUN" -eq 0 ] && ! have jq; then
-		warn "jq not found; skipping JSON validation"
+		if verify_security_settings "$ZED_SETTINGS"; then
+			log "Privacy settings verified (telemetry off, auto_update off)"
+		else
+			warn "Privacy verification failed immediately after write (close Zed and run --repair-settings)"
+		fi
 	fi
+}
+
+template_available() {
+	if [ -f "$ZED_SETTINGS_TEMPLATE" ]; then
+		return 0
+	fi
+	if [ -f "$ZED_SETTINGS_TEMPLATE_SHARE" ]; then
+		return 0
+	fi
+	return 1
+}
+
+do_repair_settings() {
+	if ! have jq; then
+		die "--repair-settings requires jq (python3 recommended for JSONC normalize)"
+	fi
+	check_zed_running
+	install_enforce_helper
+	run mkdir -p "$ZED_CONFIG_DIR"
+
+	if [ "$REGENERATE_TEMPLATE" -eq 1 ]; then
+		warn "Regenerating template from current CLI flags (--regenerate-template)"
+		write_settings_template_file
+	elif ! template_available; then
+		if [ ! -f "$ZED_SETTINGS" ]; then
+			die "settings.json missing; run full install: install-zed-no-ai.sh or install-zed-local-llm.sh MODEL"
+		fi
+		log "Template missing; inferring install mode from settings.json"
+		if ! apply_inferred_install_flags "$ZED_SETTINGS"; then
+			die "Cannot infer install mode from settings.json. Run: install-zed-no-ai.sh or install-zed-local-llm.sh MODEL"
+		fi
+		write_settings_template_file
+	fi
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would repair privacy settings in $ZED_SETTINGS"
+		return 0
+	fi
+	enforce_bin="$SCRIPT_DIR/zed-security-settings.sh"
+	if [ -x "$ZED_ENFORCE_SCRIPT" ]; then
+		enforce_bin="$ZED_ENFORCE_SCRIPT"
+	fi
+	ZED_ENFORCE_STRICT_VERIFY=1 sh "$enforce_bin" \
+		"$ZED_SETTINGS" "$ZED_SETTINGS_TEMPLATE"
+	repair_rc=$?
+	if [ "$repair_rc" -eq 1 ]; then
+		die "Failed to repair settings"
+	fi
+	if [ "$repair_rc" -eq 2 ]; then
+		die "Partial repair (sed only). Close Zed, install jq + python3, then retry --repair-settings"
+	fi
+	log "Privacy settings repaired"
 }
 
 # --- Wrapper ---
@@ -1110,6 +1233,28 @@ unset OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY XAI_API_KEY \
 
 ZED_BIN="${ZED_BIN:-WRAPPER_ZED_BIN_PLACEHOLDER}"
 ZED_SECURE_NETWORK_SANDBOX="${ZED_SECURE_NETWORK_SANDBOX:-WRAPPER_SANDBOX_DEFAULT}"
+ZED_SETTINGS="${XDG_CONFIG_HOME:-$HOME/.config}/zed/settings.json"
+ZED_TEMPLATE="${XDG_CONFIG_HOME:-$HOME/.config}/zed/settings.zed-secure-template.json"
+ZED_TEMPLATE_SHARE="${ZED_TEMPLATE_SHARE:-$HOME/.local/share/zed-secure/settings-template.json}"
+ZED_ENFORCE_SCRIPT="${ZED_ENFORCE_SCRIPT:-$HOME/.local/share/zed-secure/enforce-settings.sh}"
+
+if [ "${ZED_SECURE_ENFORCE_SETTINGS:-1}" = "1" ] && [ -x "$ZED_ENFORCE_SCRIPT" ]; then
+  if [ ! -f "$ZED_TEMPLATE" ] && [ -f "$ZED_TEMPLATE_SHARE" ]; then
+    ZED_TEMPLATE="$ZED_TEMPLATE_SHARE"
+  fi
+  enforce_rc=0
+  "$ZED_ENFORCE_SCRIPT" "$ZED_SETTINGS" "$ZED_TEMPLATE" || enforce_rc=$?
+  if [ "$enforce_rc" -ne 0 ]; then
+    if [ "$enforce_rc" -eq 2 ]; then
+      printf 'WARNING: zed-secure: partial privacy fix (sed only; telemetry). Close Zed and run: install-zed-secure.sh --repair-settings\n' >&2
+    else
+      printf 'WARNING: zed-secure: privacy overlay failed (see above). Run: install-zed-secure.sh --repair-settings\n' >&2
+    fi
+    if [ "${ZED_SECURE_ENFORCE_STRICT:-0}" = "1" ]; then
+      exit 1
+    fi
+  fi
+fi
 
 if [ "$ZED_SECURE_NETWORK_SANDBOX" = "1" ] && command -v systemd-run >/dev/null 2>&1; then
 WRAPPER_HEAD
@@ -1441,6 +1586,9 @@ IMPORTANT limitations:
   - --uid-wide-strict-firewall requires --i-accept-uid-wide-firewall (UID-wide nft, not endpoint blocklist)
   - Training data opt-in has no settings key (UI toggle only)
   - Extensions and language servers may make network requests
+  - Zed UI may re-enable telemetry; zed-secure re-applies privacy overlay on each launch
+  - Run: install-zed-secure.sh --repair-settings (Zed closed) to fix settings.json
+  - Opt out of launch-time enforce: ZED_SECURE_ENFORCE_SETTINGS=0 zed-secure .
 
 EOF
 }
@@ -1471,6 +1619,12 @@ main() {
 		fi
 	fi
 
+	if [ "$REPAIR_SETTINGS" -eq 1 ]; then
+		install_enforce_helper
+		do_repair_settings
+		exit 0
+	fi
+
 	validate_zed_channel
 	resolve_zed_app_paths
 
@@ -1497,6 +1651,7 @@ main() {
 		die "Zed binary not found under $ZED_APP_DIR after install (channel=$ZED_CHANNEL). Check upstream install output."
 	fi
 	write_settings
+	install_enforce_helper
 	write_zed_secure_wrapper
 	replace_zed_cli_symlink
 	patch_desktop_entry

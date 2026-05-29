@@ -7,7 +7,8 @@ INSTALLER="$ROOT/scripts/install-zed-secure.sh"
 
 printf '==> syntax check: %s\n' "$INSTALLER"
 sh -n "$INSTALLER"
-for preset in "$ROOT"/scripts/install-zed-no-ai.sh "$ROOT"/scripts/install-zed-local-llm.sh; do
+for preset in "$ROOT"/scripts/install-zed-no-ai.sh "$ROOT"/scripts/install-zed-local-llm.sh \
+	"$ROOT"/scripts/zed-security-settings.sh; do
 	printf '==> syntax check: %s\n' "$preset"
 	sh -n "$preset"
 done

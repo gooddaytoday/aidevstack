@@ -19,6 +19,8 @@ Privacy-first installer for [Zed](https://zed.dev/) on Linux. Configures Zed for
 - `curl` or `wget`
 - Vulkan-capable GPU (see [Zed Linux docs](https://zed.dev/docs/linux))
 - Local OpenAI-compatible LLM server (llama.cpp, vLLM, LM Studio, etc.) — **not installed by this script**
+- `jq` — required when updating an existing `settings.json`, `--repair-settings`, `--merge-config`, or `--refresh-llm-config` (fresh install with no settings file does not need `jq`)
+- `python3` — recommended if Zed has already saved `settings.json` with JSONC trailing commas (used for normalize before overlay)
 
 ## Quick Start
 
@@ -80,7 +82,10 @@ Use [`install-zed-secure.sh`](scripts/install-zed-secure.sh) when you need custo
 | `--enable-endpoint-blocklist` | Add `/etc/hosts` blocklist for cloud endpoints (hosts only) |
 | `--disable-endpoint-blocklist` | Remove `/etc/hosts` blocklist markers only (no settings/wrapper changes unless other install flags are passed) |
 | `--do-not-hide-env-files` | Keep `.env` visible in file tree (still protected from AI writes) |
-| `--merge-config` | Deep-merge installer template into existing `settings.json` via `jq`; security keys always overwritten (requires `jq`) |
+| `--merge-config` | Full merge via `jq`: security keys + `language_models` from template (requires `jq`) |
+| `--refresh-llm-config` | Security overlay + overwrite `language_models` from template |
+| `--repair-settings` | Re-apply privacy overlay only; no Zed/binary changes |
+| `--regenerate-template` | With `--repair-settings`: overwrite template from current CLI flags (can change AI mode; use with care) |
 | `--offline` | Fail if a network fetch would be required; use with `ZED_BUNDLE_PATH` in air-gapped environments |
 | `--replace-zed-cli` | Replace `~/.local/bin/zed` with a symlink to `zed-secure` (opt-in; backs up existing `zed`) |
 | `--dry-run` | Print actions without executing |
@@ -113,11 +118,35 @@ The installer passes `ZED_CHANNEL` to the official Zed install script. App bundl
 
 ## What Gets Configured
 
-Written to `~/.config/zed/settings.json` **before first launch** (or on each install run):
+Written to `~/.config/zed/settings.json` on each install run. A security template is also saved as `~/.config/zed/settings.zed-secure-template.json`.
 
-- **Existing file:** the installer **overwrites** `settings.json` with the secure template. A timestamped backup is created first: `settings.json.bak.<YYYYMMDDHHMMSS>`.
-- **Preserve custom keys:** use `--merge-config` to deep-merge the template into your existing file. Security-critical keys (`telemetry`, `disable_ai`, `auto_update`, `title_bar`, `agent`, `edit_predictions`, and related AI settings) are always taken from the installer template.
-- **Dry-run:** logs backup and write actions without modifying `settings.json`.
+| Situation | Behavior |
+|-----------|----------|
+| No existing `settings.json` | Full secure template written |
+| Existing file (default) | **Security-only overlay** — privacy keys from template; your `language_models`, themes, editor keys preserved |
+| `--merge-config` | Full merge including `language_models` from template |
+| `--refresh-llm-config` | Security overlay + overwrite `language_models` from template |
+| `--repair-settings` | Re-apply security overlay only (no Zed reinstall); close Zed first |
+
+Timestamped backups: `settings.json.bak.<YYYYMMDDHHMMSS>` before each write.
+
+### Telemetry and Zed UI
+
+The installer sets `telemetry.diagnostics` and `telemetry.metrics` to `false`. **Zed can turn them back on** when you save settings from the UI (Settings → telemetry).
+
+Defense in depth:
+
+1. **`zed-secure` on each launch** re-applies the privacy overlay from `settings.zed-secure-template.json` (disable with `ZED_SECURE_ENFORCE_SETTINGS=0`).
+2. **`--repair-settings`** fixes `settings.json` without reinstalling Zed (close Zed first). If the template file is missing, the installer infers AI mode from your current `settings.json` instead of guessing from CLI flags.
+3. Close Zed before running the installer to avoid a race with the UI overwriting the file.
+
+**Sed fallback (partial fix):** If `settings.json` cannot be parsed as JSON (common after Zed UI saves JSONC), enforcement may apply a **sed-only** fix for `telemetry` and `auto_update` only. It does **not** update `disable_ai`, `agent`, or `title_bar` — install `jq` + `python3` and run `--repair-settings` for a full overlay.
+
+```sh
+./scripts/install-zed-secure.sh --repair-settings
+ZED_SECURE_ENFORCE_SETTINGS=0 zed-secure .   # opt out of launch-time enforce
+ZED_SECURE_ENFORCE_STRICT=1 zed-secure .     # abort launch if overlay fails (exit 1)
+```
 
 Privacy and AI defaults applied by the template:
 

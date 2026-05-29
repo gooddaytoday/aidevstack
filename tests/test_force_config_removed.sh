@@ -31,10 +31,10 @@ out=$(XDG_CONFIG_HOME=$tmp "$INSTALLER" --disable-ai --dry-run 2>&1) || \
 if ! printf '%s\n' "$out" | grep -q '\[dry-run\].*cp.*settings.json'; then
 	fail 'expected [dry-run] cp for settings backup'
 fi
-if ! printf '%s\n' "$out" | grep -q 'Would write.*settings.json'; then
-	fail 'expected Would write settings.json in dry-run'
+if ! printf '%s\n' "$out" | grep -qE 'Would write.*settings\.json|Would apply security-only overlay'; then
+	fail 'expected Would write or security overlay message in dry-run'
 fi
-printf 'OK: existing settings -> dry-run backup + would write\n'
+printf 'OK: existing settings -> dry-run backup + settings update\n'
 
 # --help must not mention --force-config
 if "$INSTALLER" --help 2>&1 | grep -q 'force-config'; then

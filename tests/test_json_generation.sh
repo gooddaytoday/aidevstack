@@ -115,4 +115,21 @@ theme=$(jq -r '.custom_theme' "$cfg/zed/settings.json")
 [ "$theme" = "keep-me" ] || fail "case 10: custom_theme lost"
 printf 'OK: case 10 merge-config security overwrite\n'
 
-printf 'All JSON generation tests passed (10 cases).\n'
+# 11. security-only overlay on existing settings (no --merge-config)
+cfg="$base/case-11"
+mkdir -p "$cfg/zed"
+cat >"$cfg/zed/settings.json" <<'EOF'
+{
+  "custom_marker": "stay",
+  "telemetry": { "metrics": true, "diagnostics": true }
+}
+EOF
+XDG_CONFIG_HOME=$cfg "$INSTALLER" --disable-ai >/dev/null 2>&1 \
+	|| fail 'case 11: security overlay install failed'
+metrics=$(jq -r '.telemetry.metrics' "$cfg/zed/settings.json")
+marker=$(jq -r '.custom_marker' "$cfg/zed/settings.json")
+[ "$metrics" = "false" ] || fail "case 11: metrics=$metrics"
+[ "$marker" = "stay" ] || fail "case 11: custom_marker lost"
+printf 'OK: case 11 security-only overlay preserves custom keys\n'
+
+printf 'All JSON generation tests passed (11 cases).\n'
