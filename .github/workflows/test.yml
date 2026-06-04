@@ -24,3 +24,23 @@ jobs:
             scripts/zed-security-settings.sh \
             scripts/install-zed-no-ai.sh \
             scripts/install-zed-local-llm.sh
+
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Windows PowerShell 5.1 (baseline)
+        shell: powershell
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
+          .\tests\windows\Invoke-Tests.ps1
+
+      - name: PowerShell 7 (compatibility leg)
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          ./tests/windows/Invoke-Tests.ps1 -SkipAnalyzer

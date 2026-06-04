@@ -222,6 +222,30 @@ In Zed: Command Palette → `zed: open telemetry log` — should stay empty afte
 5. **Endpoint blocklist** — Hosts-only best-effort; no global nft drop rules; does not replace process-level sandbox (enabled by default for local-AI installs).
 6. **NixOS/Alpine** — Official binary may need glibc compatibility layer.
 
+## Windows 11+
+
+A Windows port lives in [`scripts/windows/`](scripts/windows/) (PowerShell 5.1, no extra
+prerequisites). It mirrors this tool's flags, privacy overlay, dry-run discipline, and
+launch-time enforcement, substituting Windows-native facilities:
+
+- **Network sandbox** → a persistent per-application **Windows Defender Firewall** outbound-block
+  rule on `Zed.exe` (loopback stays reachable), enabled by default for local-AI installs; plus an
+  opt-in machine-wide strict tier. (Linux uses per-launch `systemd-run`.)
+- **Endpoint blocklist** → the same marker block in `%SystemRoot%\System32\drivers\etc\hosts`.
+- **Launcher** → clears cloud API key env vars + re-applies the overlay, behind a no-flash shortcut.
+- **Settings** → `%APPDATA%\Zed\settings.json`, same overlay/merge/repair semantics.
+
+```powershell
+.\scripts\windows\Install-ZedNoAi.ps1                 # maximum privacy, no LLM
+.\scripts\windows\Install-ZedLocalLlm.ps1 your-model  # local LLM + firewall sandbox
+.\scripts\windows\Install-ZedLocalLlm.ps1 m -DryRun   # preview, no changes
+```
+
+See [docs/zed-secure-install-windows.md](docs/zed-secure-install-windows.md) for the full Windows
+guide and [docs/zed-secure-install-windows-parity.md](docs/zed-secure-install-windows-parity.md) for
+the R1–R14 parity map and the Windows-specific gaps (notably: the per-app firewall blocks `Zed.exe`
+but not its child processes).
+
 ## References
 
 - [Zed Linux install](https://zed.dev/docs/linux)
