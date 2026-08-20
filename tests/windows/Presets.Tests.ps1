@@ -43,7 +43,15 @@ Describe 'Install-ZedLocalLlm.ps1' {
         Should-ContainText $r.Output '[dry-run]'
         Should-ContainText $r.Output 'LLM model:  test-model'
         Should-ContainText $r.Output 'AI mode:    local OpenAI-compatible'
+        Should-ContainText $r.Output 'LLM API:    http://127.0.0.1:8080/v1'
+        Should-NotContainText $r.Output 'api_version=2024'
         $r.Output | Should -Match 'Sandbox:\s+enabled'
         Should-ContainText $r.Output 'hosts blocklist'
+    }
+
+    It 'honors ZED_LLM_API_URL' {
+        $r = Invoke-ZedScript -Script 'Install-ZedLocalLlm.ps1' -Arguments @('test-model', '-DryRun') -EnvVars @{ ZED_LLM_API_URL = 'http://localhost:8080/v1?custom=1' }
+        $r.ExitCode | Should -Be 0
+        Should-ContainText $r.Output 'LLM API:    http://localhost:8080/v1?custom=1'
     }
 }

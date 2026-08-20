@@ -7,11 +7,11 @@ Privacy-first installer for [Zed](https://zed.dev/) on Linux. Configures Zed for
 | Layer | What it protects | Limitation |
 |-------|------------------|------------|
 | **settings.json** | Telemetry, crash reports, update checks, sign-in UI, cloud tool permissions | Does not block network at OS level |
-| **zed-secure wrapper** | Clears cloud API keys from environment | Keys in OS keychain still possible if added manually |
-| **Network sandbox** | Blocks all outbound except loopback via `systemd-run` (enabled by default for local-AI) | Requires systemd; breaks extension marketplace, remote LSP |
+| **zed-secure wrapper** | Clears documented built-in provider API keys from the environment | Keys in the OS keychain and custom `<PROVIDER_ID>_API_KEY` variables still require manual removal |
+| **Network sandbox** | Blocks direct non-loopback IPv4/IPv6 traffic from the Zed service cgroup via a verified transient system service (enabled by default for local-AI) | Requires `sudo`, Python 3, systemd cgroup-BPF support, and an administrator prompt on each launch; local IPC/brokers remain reachable |
 | **Endpoint blocklist** (`--enable-endpoint-blocklist`) | Best-effort `/etc/hosts` for known cloud domains (no global nft rules) | Not authoritative; hostname-only; does not block all egress OS-wide; wildcards unsupported in hosts |
 
-**For proprietary code with local AI:** network sandbox is enabled automatically when you pass `--llm-model`. Use `--no-network-sandbox` only if you accept cloud egress risk. Settings alone are not sufficient.
+**For proprietary code with local AI:** network sandbox is requested automatically when you pass `--llm-model`. Installation and every protected launch verify real filtering in a root-managed transient service; failure stops Zed. Use `--no-network-sandbox` only if you accept cloud egress risk. Settings alone are not sufficient.
 
 ## Requirements
 
@@ -20,7 +20,12 @@ Privacy-first installer for [Zed](https://zed.dev/) on Linux. Configures Zed for
 - Vulkan-capable GPU (see [Zed Linux docs](https://zed.dev/docs/linux))
 - Local OpenAI-compatible LLM server (llama.cpp, vLLM, LM Studio, etc.) — **not installed by this script**
 - `jq` — required when updating an existing `settings.json`, `--repair-settings`, `--merge-config`, or `--refresh-llm-config` (fresh install with no settings file does not need `jq`)
-- `python3` — recommended if Zed has already saved `settings.json` with JSONC trailing commas (used for normalize before overlay)
+- `python3` — required for the network-sandbox probe; also used to normalize JSONC before settings overlay
+- systemd with working system-manager cgroup-BPF IP filtering, plus `sudo` — required when the network sandbox is enabled
+
+Run the installer as your ordinary desktop user, **not** with `sudo`; the
+wrapper elevates only the `systemd-run` request and always runs Zed as the
+original non-root UID/GID.
 
 ## Quick Start
 
@@ -42,7 +47,7 @@ Always passes `--disable-ai` first; AI stays disabled even if you forward `--llm
 
 **MODEL must be the first argument** (not `--dry-run`). Example: `./scripts/install-zed-local-llm.sh my-model --dry-run`.
 
-Preset includes: `--install-deps` (may run `sudo` on every install), loopback LLM URL, endpoint blocklist, and network sandbox (enabled automatically by the main installer). To reconfigure without installing packages, use [`install-zed-secure.sh`](scripts/install-zed-secure.sh) without `--install-deps`.
+Preset includes: `--install-deps` (may run `sudo` on every install), loopback LLM URL, endpoint blocklist, and network sandbox (enabled automatically by the main installer). The sandbox also authenticates through `sudo` on every protected launch. To reconfigure without installing packages, use [`install-zed-secure.sh`](scripts/install-zed-secure.sh) without `--install-deps`.
 
 ### Dry run (preview actions)
 
@@ -76,9 +81,9 @@ Use [`install-zed-secure.sh`](scripts/install-zed-secure.sh) when you need custo
 | `--llm-completions-url URL` | Edit predictions endpoint (default: `{api-url}/completions`) |
 | `--disable-local-edit-predictions` | Disable inline completions, keep Agent Panel |
 | `--allow-nonlocal-llm` | Allow LLM URL not on loopback (not recommended) |
-| `--enable-network-sandbox` | Explicitly enable `systemd-run` localhost-only network (default for local-AI) |
+| `--enable-network-sandbox` | Explicitly require a verified root-managed transient service with direct IP traffic limited to loopback (default for local-AI) |
 | `--no-network-sandbox` | Opt out of network sandbox (not recommended for proprietary code) |
-| `--allow-no-sandbox` | Continue if sandbox unavailable (local-AI default expects sandbox) |
+| `--allow-no-sandbox` | Allow installation to continue with the sandbox disabled if privileged verification fails |
 | `--enable-endpoint-blocklist` | Add `/etc/hosts` blocklist for cloud endpoints (hosts only) |
 | `--disable-endpoint-blocklist` | Remove `/etc/hosts` blocklist markers only (no settings/wrapper changes unless other install flags are passed) |
 | `--do-not-hide-env-files` | Keep `.env` visible in file tree (still protected from AI writes) |
@@ -100,7 +105,7 @@ These flags weaken privacy guarantees or affect **all processes** under your use
 | Flag | Risk | Mitigation |
 |------|------|------------|
 | `--allow-nonlocal-llm` | LLM traffic can leave loopback | Keep default loopback URLs; use network sandbox |
-| `--uid-wide-strict-firewall` + `--i-accept-uid-wide-firewall` | **Blocks all outbound IPv4** for your UID via nft (browsers, git, SSH, etc.) | Requires both flags; 5-second pause unless `--yes`; remove with `sudo nft delete table inet zed_uid_strict` or `--uninstall` |
+| `--uid-wide-strict-firewall` + `--i-accept-uid-wide-firewall` | **Blocks all outbound IPv4 and IPv6 except loopback** for your UID via nft (browsers, git, SSH, etc.) | Requires both flags; 5-second pause unless `--yes`; remove with `sudo nft delete table inet zed_uid_strict` or `--uninstall` |
 | `--no-network-sandbox` | Zed may reach cloud endpoints | Default for local-AI installs is sandbox on |
 
 ## Release channels
@@ -115,6 +120,8 @@ The installer passes `ZED_CHANNEL` to the official Zed install script. App bundl
 | `dev` | `~/.local/zed-dev.app` | `dev.zed.Zed-Dev.desktop` |
 
 `zed-secure` and the patched desktop entry always point at the binary for the channel you installed. Settings remain in `~/.config/zed/settings.json` (shared across channels, same as upstream Zed).
+
+For a network install, this project downloads `https://zed.dev/install.sh` completely before executing it; it never streams a partial response into a shell. Set `ZED_INSTALLER_SHA256` to a trusted 64-character digest to require verification. Without it, the installer prints a warning because HTTPS alone does not pin the upstream script. For stronger provenance, download a release asset and its published SHA-256 separately, verify it, and use the offline flow below.
 
 ## What Gets Configured
 
@@ -168,6 +175,21 @@ zed-secure /path/to/project
 
 Or open Zed from the application menu (desktop entry is patched automatically).
 
+For a sandboxed launch, `zed-secure` requests administrator authentication,
+starts Zed as your original UID/GID in a transient **system** service, and tests
+both working loopback and denied non-loopback traffic before executing Zed. A
+missing helper/backend, cancelled prompt, unsupported BPF filter, or failed
+probe is fatal; the wrapper never falls back to an ordinary launch. A desktop
+launch without a terminal requires `SUDO_ASKPASS` to name an absolute,
+executable helper whose file and parent chain are owned by root or your user
+and not group/world writable; the wrapper invokes `sudo -A`. Otherwise, launch
+from a terminal.
+
+The protected instance uses a separate data directory under
+`~/.local/share/zed-secure/<channel>` (extensions, databases, logs, and its IPC
+socket) so it cannot forward into an ordinary Zed instance. Settings continue
+to come from the normal `XDG_CONFIG_HOME`/`~/.config` location.
+
 Optional: pass `--replace-zed-cli` during install to make `zed` in `~/.local/bin` point at `zed-secure` as well. The upstream app binary (for example `~/.local/zed.app/bin/zed`) can still be launched directly and **bypasses** env key clearing and network sandbox — do not use it for secure workflows.
 
 ## Environment Variables
@@ -177,6 +199,7 @@ export ZED_LLM_MODEL=my-model
 export ZED_LLM_API_URL=http://127.0.0.1:8080/v1
 export ZED_CHANNEL=stable   # stable | preview | nightly | dev
 export ZED_VERSION=latest
+export ZED_INSTALLER_SHA256=YOUR_TRUSTED_64_CHARACTER_SHA256  # optional network-script pin
 export ZED_BUNDLE_PATH=/path/to/zed-linux-x86_64.tar.gz  # local tarball for offline install
 ```
 
@@ -189,7 +212,9 @@ export ZED_BUNDLE_PATH=/path/to/zed-linux-x86_64.tar.gz
 ./scripts/install-zed-secure.sh --disable-ai --offline
 ```
 
-With `ZED_BUNDLE_PATH` set, the installer extracts the tarball directly (no `curl` to upstream install script). `--offline` makes network fetch a hard error when a local bundle or existing installation is unavailable.
+With `ZED_BUNDLE_PATH` set, the installer extracts the tarball into a staging directory, validates the expected executable, and only then replaces the live app directory (no `curl` to the upstream install script). A corrupt or wrong-layout bundle leaves the prior app directory intact. `--offline` makes network fetch a hard error when a local bundle or existing installation is unavailable.
+
+Verify the bundle against the SHA-256 published with the corresponding Zed release before running this installer; `ZED_BUNDLE_PATH` itself does not assert artifact provenance.
 
 Supported bundle names follow upstream: `zed-linux-x86_64.tar.gz` or `zed-linux-aarch64.tar.gz`. Channel-specific app directories (`zed.app`, `zed-preview.app`, etc.) are handled automatically via `--channel`.
 
@@ -199,6 +224,7 @@ Supported bundle names follow upstream: `zed-linux-x86_64.tar.gz` or `zed-linux-
 make test          # or: ./tests/run.sh
 sh -n scripts/install-zed-secure.sh
 shellcheck -s sh scripts/install-zed-secure.sh   # if installed
+ZED_SANDBOX_PRIVILEGED_TEST=1 sh tests/test_network_sandbox_privileged.sh  # live PID 1/BPF probe; prompts for sudo
 grep -E 'telemetry|auto_update|show_sign_in' ~/.config/zed/settings.json
 zed-secure --version
 curl http://127.0.0.1:8080/v1/models              # if LLM server running
@@ -218,9 +244,10 @@ In Zed: Command Palette → `zed: open telemetry log` — should stay empty afte
 1. **No `disable_cloud_ai` setting** — Zed has no setting to disable cloud providers while keeping local AI. Mitigation: loopback-only URLs + network sandbox (on by default for local-AI) + no sign-in.
 2. **Training data opt-in** — UI toggle only; no settings key.
 3. **Server-side telemetry** — Cannot be disabled when using sign-in, hosted AI, or collaboration.
-4. **Extensions** — May make network requests; avoid untrusted extensions.
+4. **Extensions** — Direct non-loopback IP traffic from Zed and its children is blocked, but avoid untrusted extensions.
 5. **Endpoint blocklist** — Hosts-only best-effort; no global nft drop rules; does not replace process-level sandbox (enabled by default for local-AI installs).
 6. **NixOS/Alpine** — Official binary may need glibc compatibility layer.
+7. **Sandbox boundary** — The cgroup filter does not isolate files, Unix sockets, session D-Bus, inherited descriptors, the display server, or services reachable over localhost. Those channels can broker network access; this is direct IP-egress control, not a complete hostile-code sandbox.
 
 ## Windows 11+
 
@@ -230,7 +257,7 @@ launch-time enforcement, substituting Windows-native facilities:
 
 - **Network sandbox** → a persistent per-application **Windows Defender Firewall** outbound-block
   rule on `Zed.exe` (loopback stays reachable), enabled by default for local-AI installs; plus an
-  opt-in machine-wide strict tier. (Linux uses per-launch `systemd-run`.)
+  opt-in machine-wide strict tier. (Linux uses a verified, authenticated transient system service.)
 - **Endpoint blocklist** → the same marker block in `%SystemRoot%\System32\drivers\etc\hosts`.
 - **Launcher** → clears cloud API key env vars + re-applies the overlay, behind a no-flash shortcut.
 - **Settings** → `%APPDATA%\Zed\settings.json`, same overlay/merge/repair semantics.

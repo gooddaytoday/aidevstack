@@ -53,5 +53,6 @@ if (-not (Test-Path -LiteralPath $installer)) {
     exit 1
 }
 
-& $installer -InstallDeps -LlmModel $model -LlmApiUrl 'http://127.0.0.1:8080/v1?api_version=2024' -EnableEndpointBlocklist @rest
+$llmApiUrl = if ($env:ZED_LLM_API_URL) { $env:ZED_LLM_API_URL } else { 'http://127.0.0.1:8080/v1' }
+& $installer -InstallDeps -LlmModel $model -LlmApiUrl $llmApiUrl -EnableEndpointBlocklist @rest
 exit $LASTEXITCODE

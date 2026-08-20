@@ -40,7 +40,7 @@
 1. Удалить глобальный `output` hook из default path.
 2. Оставить `/etc/hosts` blocklist как единственный system-wide best-effort механизм (с явным warning в README).
 3. Альтернатива (если nft всё же нужен): ограничить правила `meta skuid $(id -u)` **только** при явном `--uid-wide-strict-firewall`, не смешивать с endpoint blocklist.
-4. Обновить README: endpoint blocklist ≠ process isolation; основная защита — `systemd-run` sandbox.
+4. Обновить README: endpoint blocklist ≠ process isolation; основная защита — проверяемый transient system service с cgroup-BPF фильтром.
 
 **Критерии приёмки:**
 

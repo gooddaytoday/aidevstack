@@ -21,7 +21,9 @@ fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT HUP TERM
-mkdir -p "$tmp/zed"
+mkdir -p "$tmp/zed" "$tmp/.local/zed.app/bin"
+printf '#!/bin/sh\nexit 0\n' >"$tmp/.local/zed.app/bin/zed"
+chmod +x "$tmp/.local/zed.app/bin/zed"
 
 # Install on Zed-style JSONC settings preserves custom keys
 cat >"$tmp/zed/settings.json" <<'EOF'
@@ -31,7 +33,7 @@ cat >"$tmp/zed/settings.json" <<'EOF'
 }
 EOF
 
-XDG_CONFIG_HOME=$tmp "$INSTALLER" --disable-ai >/dev/null 2>&1 \
+HOME=$tmp XDG_CONFIG_HOME=$tmp "$INSTALLER" --disable-ai >/dev/null 2>&1 \
 	|| fail 'install on JSONC settings failed'
 
 metrics=$(jq -r '.telemetry.metrics' "$tmp/zed/settings.json")
@@ -48,8 +50,9 @@ cat >"$tmp/zed/settings.json" <<'EOF'
   "language_models": { "openai_compatible": { "Old": { "api_url": "http://old/v1" } } }
 }
 EOF
-XDG_CONFIG_HOME=$tmp ZED_LLM_MODEL=test-model ZED_LLM_PROVIDER_NAME=LocalLLM \
-	"$INSTALLER" --refresh-llm-config --llm-model test-model >/dev/null 2>&1 \
+HOME=$tmp XDG_CONFIG_HOME=$tmp ZED_LLM_MODEL=test-model ZED_LLM_PROVIDER_NAME=LocalLLM \
+	"$INSTALLER" --refresh-llm-config --llm-model test-model \
+	--no-network-sandbox >/dev/null 2>&1 \
 	|| fail '--refresh-llm-config failed'
 
 theme=$(jq -r '.custom_theme' "$tmp/zed/settings.json")
@@ -62,7 +65,7 @@ printf 'OK: --refresh-llm-config preserves theme, updates LLM\n'
 
 # --repair-settings without template infers disable_ai from settings
 rm -f "$tmp/zed/settings.zed-secure-template.json"
-rm -rf "$tmp/share-zed-secure" 2>/dev/null || true
+rm -rf "$tmp/.local/share/zed-secure" 2>/dev/null || true
 cat >"$tmp/zed/settings.json" <<'EOF'
 {
   "disable_ai": true,

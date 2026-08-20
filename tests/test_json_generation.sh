@@ -18,14 +18,24 @@ fi
 base=$(mktemp -d)
 trap 'rm -rf "$base"' EXIT INT HUP TERM
 
+provision_profile() {
+	profile_dir=$1
+	mkdir -p "$profile_dir/.local/zed.app/bin"
+	printf '#!/bin/sh\nexit 0\n' >"$profile_dir/.local/zed.app/bin/zed"
+	chmod +x "$profile_dir/.local/zed.app/bin/zed"
+}
+
 run_install() {
 	label=$1
 	shift
 	case_id=$1
 	shift
 	cfg="$base/case-$case_id"
+	profile="$base/profile-$case_id"
 	mkdir -p "$cfg/zed"
-	XDG_CONFIG_HOME=$cfg "$INSTALLER" "$@" >/dev/null 2>&1 \
+	provision_profile "$profile"
+	HOME=$profile XDG_CONFIG_HOME=$cfg XDG_DATA_HOME="$profile/.local/share" \
+		"$INSTALLER" --allow-no-sandbox "$@" >/dev/null 2>&1 \
 		|| fail "$label: install failed"
 	settings="$cfg/zed/settings.json"
 	[ -f "$settings" ] || fail "$label: settings.json missing"
@@ -100,14 +110,17 @@ printf 'OK: case 9 query URL preserved\n'
 
 # 10. merge-config security keys
 cfg="$base/case-10"
+profile="$base/profile-10"
 mkdir -p "$cfg/zed"
+provision_profile "$profile"
 cat >"$cfg/zed/settings.json" <<'EOF'
 {
   "telemetry": { "metrics": true, "diagnostics": true },
   "custom_theme": "keep-me"
 }
 EOF
-XDG_CONFIG_HOME=$cfg "$INSTALLER" --disable-ai --merge-config >/dev/null 2>&1 \
+HOME=$profile XDG_CONFIG_HOME=$cfg XDG_DATA_HOME="$profile/.local/share" \
+	"$INSTALLER" --allow-no-sandbox --disable-ai --merge-config >/dev/null 2>&1 \
 	|| fail 'case 10: merge-config failed'
 metrics=$(jq -r '.telemetry.metrics' "$cfg/zed/settings.json")
 theme=$(jq -r '.custom_theme' "$cfg/zed/settings.json")
@@ -117,14 +130,17 @@ printf 'OK: case 10 merge-config security overwrite\n'
 
 # 11. security-only overlay on existing settings (no --merge-config)
 cfg="$base/case-11"
+profile="$base/profile-11"
 mkdir -p "$cfg/zed"
+provision_profile "$profile"
 cat >"$cfg/zed/settings.json" <<'EOF'
 {
   "custom_marker": "stay",
   "telemetry": { "metrics": true, "diagnostics": true }
 }
 EOF
-XDG_CONFIG_HOME=$cfg "$INSTALLER" --disable-ai >/dev/null 2>&1 \
+HOME=$profile XDG_CONFIG_HOME=$cfg XDG_DATA_HOME="$profile/.local/share" \
+	"$INSTALLER" --allow-no-sandbox --disable-ai >/dev/null 2>&1 \
 	|| fail 'case 11: security overlay install failed'
 metrics=$(jq -r '.telemetry.metrics' "$cfg/zed/settings.json")
 marker=$(jq -r '.custom_marker' "$cfg/zed/settings.json")

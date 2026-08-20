@@ -35,6 +35,7 @@ INSTALL_ACTION_REQUESTED=0
 
 ZED_CHANNEL="${ZED_CHANNEL:-stable}"
 ZED_VERSION="${ZED_VERSION:-latest}"
+ZED_INSTALLER_SHA256="${ZED_INSTALLER_SHA256:-}"
 ZED_LLM_MODEL="${ZED_LLM_MODEL:-}"
 ZED_LLM_API_URL="${ZED_LLM_API_URL:-http://127.0.0.1:8080/v1}"
 ZED_LLM_COMPLETIONS_URL="${ZED_LLM_COMPLETIONS_URL:-}"
@@ -48,6 +49,11 @@ ZED_SETTINGS_TEMPLATE="$ZED_CONFIG_DIR/settings.zed-secure-template.json"
 ZED_SECURE_SHARE="$HOME/.local/share/zed-secure"
 ZED_ENFORCE_SCRIPT="$ZED_SECURE_SHARE/enforce-settings.sh"
 ZED_SETTINGS_TEMPLATE_SHARE="$ZED_SECURE_SHARE/settings-template.json"
+ZED_SANDBOX_HELPER_SOURCE="$SCRIPT_DIR/zed-sandbox-launcher.py"
+ZED_SANDBOX_HELPER="$ZED_SECURE_SHARE/zed-sandbox-launcher.py"
+SANDBOX_SYSTEMD_RUN_BIN=""
+SANDBOX_SUDO_BIN=""
+SANDBOX_PYTHON_BIN=""
 ZED_BIN_DIR="$HOME/.local/bin"
 ZED_SECURE="$ZED_BIN_DIR/zed-secure"
 ZED_CLI="$ZED_BIN_DIR/zed"
@@ -119,8 +125,9 @@ Options:
   --disable-local-edit-predictions
                               Disable inline edit predictions, keep Agent Panel
   --allow-nonlocal-llm        Allow LLM URL not on loopback (not recommended)
-  --enable-network-sandbox    Run Zed via systemd-run with localhost-only network
-                              (default for local-AI installs)
+  --enable-network-sandbox    Require a verified root-managed system service with
+                              direct IP traffic limited to localhost
+                              (default for local-AI; sudo may prompt every launch)
   --no-network-sandbox        Opt out of network sandbox (not recommended)
   --allow-no-sandbox          Continue if network sandbox is unavailable
   --enable-endpoint-blocklist Best-effort /etc/hosts only blocklist for cloud endpoints
@@ -145,6 +152,7 @@ Options:
 
 Environment variables:
   ZED_CHANNEL, ZED_VERSION, ZED_BUNDLE_PATH
+  ZED_INSTALLER_SHA256              Optional SHA-256 for https://zed.dev/install.sh
   ZED_LLM_MODEL, ZED_LLM_API_URL, ZED_LLM_COMPLETIONS_URL, ZED_LLM_PROVIDER_NAME
   XDG_CONFIG_HOME, XDG_DATA_HOME
   ZED_SECURE_ENFORCE_SETTINGS  Set to 0 in zed-secure wrapper to skip privacy overlay (default: 1)
@@ -764,8 +772,74 @@ check_path() {
 }
 
 install_zed_from_network() {
-	run env ZED_CHANNEL="$ZED_CHANNEL" ZED_VERSION="$ZED_VERSION" \
-		sh -c 'curl -f https://zed.dev/install.sh | sh'
+	installer_url=https://zed.dev/install.sh
+
+	if [ -n "$ZED_INSTALLER_SHA256" ]; then
+		case "$ZED_INSTALLER_SHA256" in
+		*[!0-9A-Fa-f]*)
+			die "ZED_INSTALLER_SHA256 must be exactly 64 hexadecimal characters"
+			;;
+		esac
+		if [ "${#ZED_INSTALLER_SHA256}" -ne 64 ]; then
+			die "ZED_INSTALLER_SHA256 must be exactly 64 hexadecimal characters"
+		fi
+	fi
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would download $installer_url completely before execution"
+		if [ -n "$ZED_INSTALLER_SHA256" ]; then
+			log "Would verify upstream installer SHA-256: $ZED_INSTALLER_SHA256"
+		else
+			warn "Upstream installer has no pinned checksum; set ZED_INSTALLER_SHA256 or use a verified offline bundle"
+		fi
+		log "Would execute downloaded installer (channel=$ZED_CHANNEL version=$ZED_VERSION)"
+		return 0
+	fi
+
+	installer_tmp=$(mktemp) || die "Could not create temporary file for upstream installer"
+	case "$DOWNLOAD_CMD" in
+	curl)
+		if ! curl -fL "$installer_url" -o "$installer_tmp"; then
+			rm -f "$installer_tmp"
+			die "Failed to download upstream installer"
+		fi
+		;;
+	wget)
+		if ! wget -O "$installer_tmp" "$installer_url"; then
+			rm -f "$installer_tmp"
+			die "Failed to download upstream installer"
+		fi
+		;;
+	*)
+		rm -f "$installer_tmp"
+		die "Unsupported download command: $DOWNLOAD_CMD"
+		;;
+	esac
+
+	if [ -n "$ZED_INSTALLER_SHA256" ]; then
+		if have sha256sum; then
+			installer_actual_sha=$(sha256sum "$installer_tmp" | awk '{print $1}')
+		elif have shasum; then
+			installer_actual_sha=$(shasum -a 256 "$installer_tmp" | awk '{print $1}')
+		else
+			rm -f "$installer_tmp"
+			die "Need sha256sum or shasum to verify ZED_INSTALLER_SHA256"
+		fi
+		installer_expected_sha=$(printf '%s' "$ZED_INSTALLER_SHA256" | tr 'A-F' 'a-f')
+		if [ "$installer_actual_sha" != "$installer_expected_sha" ]; then
+			rm -f "$installer_tmp"
+			die "Upstream installer SHA-256 mismatch"
+		fi
+		log "Verified upstream installer SHA-256"
+	else
+		warn "Executing upstream installer without a pinned checksum; prefer ZED_INSTALLER_SHA256 or a verified offline bundle"
+	fi
+
+	installer_rc=0
+	env ZED_CHANNEL="$ZED_CHANNEL" ZED_VERSION="$ZED_VERSION" \
+		sh "$installer_tmp" || installer_rc=$?
+	rm -f "$installer_tmp"
+	[ "$installer_rc" -eq 0 ] || return "$installer_rc"
 }
 
 install_zed_from_bundle() {
@@ -784,30 +858,67 @@ install_zed_from_bundle() {
 	esac
 
 	log "Installing Zed from local bundle: $bundle"
-	run rm -rf "$ZED_APP_DIR"
-	run mkdir -p "$ZED_APP_DIR"
 	run mkdir -p "$ZED_BIN_DIR" "$XDG_DATA_HOME/applications"
-	run tar -xzf "$bundle" -C "$HOME/.local/"
 
-	resolve_zed_app_paths
-
-	if [ -x "$ZED_APP_DIR/bin/zed" ]; then
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would extract bundle into a staging directory and atomically replace $ZED_APP_DIR"
 		zed_bin="$ZED_APP_DIR/bin/zed"
-	elif [ -x "$ZED_APP_DIR/bin/cli" ]; then
-		zed_bin="$ZED_APP_DIR/bin/cli"
-	else
-		zed_bin="$ZED_APP_DIR/bin/zed"
+		run ln -sf "$zed_bin" "$ZED_BIN_DIR/zed"
+		desktop_file="$XDG_DATA_HOME/applications/${ZED_DESKTOP_ID}.desktop"
+		log "Would install desktop entry: $desktop_file"
+		return 0
 	fi
 
+	run mkdir -p "$HOME/.local"
+	bundle_stage=$(mktemp -d "$HOME/.local/.zed-secure-stage.XXXXXX") \
+		|| die "Could not create bundle staging directory"
+	staged_app="$bundle_stage/$(basename "$ZED_APP_DIR")"
+	if ! tar -xzf "$bundle" -C "$bundle_stage"; then
+		rm -rf "$bundle_stage"
+		die "Failed to extract Zed bundle; existing installation was not changed"
+	fi
+
+	if [ -x "$staged_app/bin/zed" ]; then
+		zed_rel=bin/zed
+	elif [ -x "$staged_app/bin/cli" ]; then
+		zed_rel=bin/cli
+	else
+		rm -rf "$bundle_stage"
+		die "Bundle does not contain an executable Zed app at $(basename "$ZED_APP_DIR")/bin"
+	fi
+
+	bundle_backup=""
+	if [ -e "$ZED_APP_DIR" ] || [ -L "$ZED_APP_DIR" ]; then
+		bundle_backup=$(mktemp -d "$HOME/.local/.zed-secure-backup.XXXXXX") \
+			|| {
+				rm -rf "$bundle_stage"
+				die "Could not reserve bundle backup path"
+			}
+		rmdir "$bundle_backup"
+		if ! mv "$ZED_APP_DIR" "$bundle_backup"; then
+			rm -rf "$bundle_stage"
+			die "Could not preserve existing Zed installation"
+		fi
+	fi
+
+	if ! mv "$staged_app" "$ZED_APP_DIR"; then
+		if [ -n "$bundle_backup" ]; then
+			mv "$bundle_backup" "$ZED_APP_DIR" || true
+		fi
+		rm -rf "$bundle_stage"
+		die "Could not activate staged Zed bundle; existing installation was restored"
+	fi
+	rm -rf "$bundle_stage"
+	if [ -n "$bundle_backup" ]; then
+		rm -rf "$bundle_backup"
+	fi
+
+	resolve_zed_app_paths
+	zed_bin="$ZED_APP_DIR/$zed_rel"
 	run ln -sf "$zed_bin" "$ZED_BIN_DIR/zed"
 
 	desktop_file="$XDG_DATA_HOME/applications/${ZED_DESKTOP_ID}.desktop"
 	src_dir="$ZED_APP_DIR/share/applications"
-
-	if [ "$DRY_RUN" -eq 1 ]; then
-		log "Would install desktop entry: $desktop_file"
-		return 0
-	fi
 
 	if [ -f "$src_dir/${ZED_DESKTOP_ID}.desktop" ]; then
 		run cp "$src_dir/${ZED_DESKTOP_ID}.desktop" "$desktop_file"
@@ -1033,7 +1144,7 @@ check_zed_running() {
 	if pgrep -x zed >/dev/null 2>&1 \
 		|| pgrep -f '/zed\.app/bin/zed' >/dev/null 2>&1 \
 		|| pgrep -f '/zed-.*\.app/bin/zed' >/dev/null 2>&1; then
-		warn "Zed is running; close it before install to avoid settings.json race with the UI"
+		warn "Zed is running; close it to avoid a settings.json race, and do NOT start it again until this installer finishes"
 	fi
 }
 
@@ -1052,6 +1163,17 @@ install_enforce_helper() {
 		run cp "$ZED_SETTINGS_TEMPLATE_SHARE" "$ZED_SETTINGS_TEMPLATE"
 		log "Restored $ZED_SETTINGS_TEMPLATE from share backup"
 	fi
+}
+
+install_sandbox_helper() {
+	[ "$ENABLE_NETWORK_SANDBOX" -eq 1 ] || return 0
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would install $ZED_SANDBOX_HELPER"
+		return 0
+	fi
+	run mkdir -p "$ZED_SECURE_SHARE"
+	run cp "$ZED_SANDBOX_HELPER_SOURCE" "$ZED_SANDBOX_HELPER"
+	run chmod +x "$ZED_SANDBOX_HELPER"
 }
 
 write_settings() {
@@ -1163,11 +1285,99 @@ do_repair_settings() {
 
 # --- Wrapper ---
 
-systemd_run_supports_workdir() {
-	if have systemd-run; then
-		systemd-run --help 2>&1 | grep -q -- '--working-directory'
+resolve_trusted_sandbox_command() {
+	command_name=$1
+	required_owner=0
+	skip_parent_validation=0
+	if [ -x /usr/bin/stat ]; then
+		stat_bin=/usr/bin/stat
+	elif [ -x /bin/stat ]; then
+		stat_bin=/bin/stat
+	elif [ -x /run/current-system/sw/bin/stat ]; then
+		stat_bin=/run/current-system/sw/bin/stat
 	else
 		return 1
+	fi
+	if [ -x /usr/bin/readlink ]; then
+		readlink_bin=/usr/bin/readlink
+	elif [ -x /bin/readlink ]; then
+		readlink_bin=/bin/readlink
+	elif [ -x /run/current-system/sw/bin/readlink ]; then
+		readlink_bin=/run/current-system/sw/bin/readlink
+	else
+		return 1
+	fi
+	case "$command_name" in
+	systemd-run) candidates="/usr/bin/systemd-run /bin/systemd-run" ;;
+	sudo) candidates="/usr/bin/sudo /bin/sudo" ;;
+	python3) candidates="/usr/bin/python3 /usr/local/bin/python3 /bin/python3" ;;
+	*) return 1 ;;
+	esac
+	path_candidate=$(command -v "$command_name" 2>/dev/null || true)
+	if [ -n "$path_candidate" ]; then
+		candidates="$candidates $path_candidate"
+	fi
+	for candidate in $candidates; do
+		resolved=$("$readlink_bin" -f -- "$candidate" 2>/dev/null || true)
+		[ -n "$resolved" ] && [ -f "$resolved" ] && [ -x "$resolved" ] || continue
+		owner=$("$stat_bin" -Lc '%u' "$resolved" 2>/dev/null || true)
+		mode=$("$stat_bin" -Lc '%a' "$resolved" 2>/dev/null || true)
+		[ "$owner" = "$required_owner" ] || continue
+		case "$mode" in
+		'' | *[!0-7]*) continue ;;
+		esac
+		mode_value=$((0$mode))
+		[ $((mode_value & 022)) -eq 0 ] || continue
+		if [ "$skip_parent_validation" -eq 0 ]; then
+			parent=${resolved%/*}
+			[ -n "$parent" ] || parent=/
+			parents_safe=1
+			while :; do
+				parent_owner=$("$stat_bin" -Lc '%u' "$parent" 2>/dev/null || true)
+				parent_mode=$("$stat_bin" -Lc '%a' "$parent" 2>/dev/null || true)
+				case "$parent_mode" in
+				'' | *[!0-7]*) parents_safe=0 ;;
+				esac
+				if [ "$parent_owner" != "0" ]; then
+					parents_safe=0
+				elif [ "$parents_safe" -eq 1 ]; then
+					parent_mode_value=$((0$parent_mode))
+					[ $((parent_mode_value & 022)) -eq 0 ] || parents_safe=0
+				fi
+				[ "$parents_safe" -eq 1 ] || break
+				[ "$parent" = "/" ] && break
+				parent=${parent%/*}
+				[ -n "$parent" ] || parent=/
+			done
+			[ "$parents_safe" -eq 1 ] || continue
+		fi
+		printf '%s\n' "$resolved"
+		return 0
+	done
+	return 1
+}
+
+run_privileged_sandbox_probe() {
+	sandbox_uid=$(id -u)
+	sandbox_gid=$(id -g)
+	sandbox_unit="zed-secure-probe-${sandbox_uid}-$$"
+
+	set -- "$SANDBOX_SYSTEMD_RUN_BIN" --system --quiet --wait --pipe --collect \
+		--service-type=exec \
+		--unit="$sandbox_unit" \
+		--uid="$sandbox_uid" \
+		--gid="$sandbox_gid" \
+		--working-directory="$(pwd -P)" \
+		--property=KillMode=control-group \
+		--property=IPAddressDeny=any \
+		--property=IPAddressAllow=localhost \
+		-- "$SANDBOX_PYTHON_BIN" "$ZED_SANDBOX_HELPER_SOURCE" probe \
+		--expected-unit="${sandbox_unit}.service"
+
+	if [ "$sandbox_uid" -eq 0 ]; then
+		"$@"
+	else
+		"$SANDBOX_SUDO_BIN" -- "$@"
 	fi
 }
 
@@ -1181,38 +1391,52 @@ check_sandbox_available() {
 		return 0
 	fi
 
-	if ! have systemd-run; then
+	SANDBOX_SYSTEMD_RUN_BIN=$(resolve_trusted_sandbox_command systemd-run || true)
+	SANDBOX_PYTHON_BIN=$(resolve_trusted_sandbox_command python3 || true)
+	if [ -z "$SANDBOX_SYSTEMD_RUN_BIN" ] || [ -z "$SANDBOX_PYTHON_BIN" ] \
+		|| [ ! -r "$ZED_SANDBOX_HELPER_SOURCE" ]; then
 		if [ "$ALLOW_NO_SANDBOX" -eq 1 ]; then
-			warn "systemd-run not found; continuing without network sandbox"
+			warn "Verified sandbox dependencies unavailable; continuing without network sandbox"
 			ENABLE_NETWORK_SANDBOX=0
 			return 0
 		fi
-		die "systemd-run not found. Install systemd or pass --allow-no-sandbox"
+		die "Network sandbox requires systemd-run, Python 3, and $ZED_SANDBOX_HELPER_SOURCE"
 	fi
-
-	# Test if IPAddressDeny is supported (quick dry test)
-	if ! systemd-run --user --scope --quiet --collect \
-		-p IPAddressDeny=any -p IPAddressAllow=localhost \
-		true 2>/dev/null; then
+	if [ "$(id -u)" -eq 0 ]; then
 		if [ "$ALLOW_NO_SANDBOX" -eq 1 ]; then
-			warn "systemd IPAddressDeny not supported; continuing without sandbox"
+			warn "Refusing to launch sandboxed Zed as root; continuing without network sandbox"
 			ENABLE_NETWORK_SANDBOX=0
 			return 0
 		fi
-		die "systemd IPAddressDeny not supported. Pass --allow-no-sandbox to continue."
+		die "Run the installer as your desktop user, not with sudo; the wrapper elevates only systemd-run"
+	fi
+	SANDBOX_SUDO_BIN=$(resolve_trusted_sandbox_command sudo || true)
+	if [ -z "$SANDBOX_SUDO_BIN" ]; then
+		if [ "$ALLOW_NO_SANDBOX" -eq 1 ]; then
+			warn "sudo not found; continuing without network sandbox"
+			ENABLE_NETWORK_SANDBOX=0
+			return 0
+		fi
+		die "Network sandbox requires sudo for the system service manager"
 	fi
 
-	log "Network sandbox available via systemd-run"
+	# A successful manager call is not evidence: the helper must observe both
+	# the system-service cgroup and an actual permission-denied network send.
+	if ! run_privileged_sandbox_probe; then
+		if [ "$ALLOW_NO_SANDBOX" -eq 1 ]; then
+			warn "Network sandbox enforcement could not be verified; continuing without sandbox"
+			ENABLE_NETWORK_SANDBOX=0
+			return 0
+		fi
+		die "Network sandbox enforcement failed. Pass --allow-no-sandbox to continue without it."
+	fi
+
+	log "Network sandbox verified via the system service manager"
 }
 
 write_zed_secure_wrapper() {
 	sandbox_default=0
 	[ "$ENABLE_NETWORK_SANDBOX" -eq 1 ] && sandbox_default=1
-
-	use_workdir=0
-	if systemd_run_supports_workdir; then
-		use_workdir=1
-	fi
 
 	if [ "$DRY_RUN" -eq 1 ]; then
 		log "Would write $ZED_SECURE (binary: $ZED_APP_BIN)"
@@ -1226,13 +1450,18 @@ write_zed_secure_wrapper() {
 #!/bin/sh
 set -eu
 
-# Unset cloud API keys that Zed reads from environment
-unset OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY XAI_API_KEY \
-      GEMINI_API_KEY MISTRAL_API_KEY TOGETHER_AI_API_KEY VERCEL_AI_GATEWAY_API_KEY \
-      OLLAMA_API_KEY VERCEL_AI_GATEWAY_API_KEY
+# Unset documented cloud API keys that Zed reads from the process environment.
+# Custom OpenAI-compatible providers may use additional <PROVIDER_ID>_API_KEY names.
+unset OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GOOGLE_AI_API_KEY \
+      GEMINI_API_KEY MISTRAL_API_KEY DEEPSEEK_API_KEY XAI_API_KEY \
+      OPENCODE_API_KEY OPENROUTER_API_KEY VERCEL_AI_GATEWAY_API_KEY \
+      OLLAMA_API_KEY LMSTUDIO_API_KEY TOGETHER_AI_API_KEY
 
 ZED_BIN="${ZED_BIN:-WRAPPER_ZED_BIN_PLACEHOLDER}"
-ZED_SECURE_NETWORK_SANDBOX="${ZED_SECURE_NETWORK_SANDBOX:-WRAPPER_SANDBOX_DEFAULT}"
+ZED_SECURE_NETWORK_SANDBOX=WRAPPER_SANDBOX_DEFAULT
+ZED_SANDBOX_CHANNEL=WRAPPER_CHANNEL_PLACEHOLDER
+ZED_SANDBOX_HELPER="$HOME/.local/share/zed-secure/zed-sandbox-launcher.py"
+ZED_SANDBOX_PYTHON=WRAPPER_PYTHON_PLACEHOLDER
 ZED_SETTINGS="${XDG_CONFIG_HOME:-$HOME/.config}/zed/settings.json"
 ZED_TEMPLATE="${XDG_CONFIG_HOME:-$HOME/.config}/zed/settings.zed-secure-template.json"
 ZED_TEMPLATE_SHARE="${ZED_TEMPLATE_SHARE:-$HOME/.local/share/zed-secure/settings-template.json}"
@@ -1256,33 +1485,28 @@ if [ "${ZED_SECURE_ENFORCE_SETTINGS:-1}" = "1" ] && [ -x "$ZED_ENFORCE_SCRIPT" ]
   fi
 fi
 
-if [ "$ZED_SECURE_NETWORK_SANDBOX" = "1" ] && command -v systemd-run >/dev/null 2>&1; then
-WRAPPER_HEAD
-
-		if [ "$use_workdir" -eq 1 ]; then
-			cat <<'WRAPPER_WORKDIR'
-  exec systemd-run --user --scope --quiet --collect \
-    --working-directory="$(pwd -P)" \
-    -p IPAddressDeny=any \
-    -p IPAddressAllow=localhost \
-    "$ZED_BIN" "$@"
-WRAPPER_WORKDIR
-		else
-			cat <<'WRAPPER_NOWORKDIR'
-  exec systemd-run --user --scope --quiet --collect \
-    -p IPAddressDeny=any \
-    -p IPAddressAllow=localhost \
-    "$ZED_BIN" "$@"
-WRAPPER_NOWORKDIR
-		fi
-
-		cat <<'WRAPPER_TAIL'
+if [ "$ZED_SECURE_NETWORK_SANDBOX" = "1" ]; then
+  if [ ! -x "$ZED_SANDBOX_PYTHON" ]; then
+    printf 'ERROR: zed-secure: trusted Python 3 is missing: %s\n' "$ZED_SANDBOX_PYTHON" >&2
+    exit 1
+  fi
+  if [ ! -x "$ZED_SANDBOX_HELPER" ]; then
+    printf 'ERROR: zed-secure: sandbox helper is missing or not executable: %s\n' "$ZED_SANDBOX_HELPER" >&2
+    exit 1
+  fi
+  exec "$ZED_SANDBOX_PYTHON" "$ZED_SANDBOX_HELPER" launch \
+    --zed-bin "$ZED_BIN" \
+    --channel "$ZED_SANDBOX_CHANNEL" \
+    -- "$@"
 fi
 
 exec "$ZED_BIN" "$@"
-WRAPPER_TAIL
+
+WRAPPER_HEAD
 	} | sed "s|WRAPPER_ZED_BIN_PLACEHOLDER|$ZED_APP_BIN|g" \
 		| sed "s|WRAPPER_SANDBOX_DEFAULT|$sandbox_default|g" \
+		| sed "s|WRAPPER_CHANNEL_PLACEHOLDER|$ZED_CHANNEL|g" \
+		| sed "s|WRAPPER_PYTHON_PLACEHOLDER|$SANDBOX_PYTHON_BIN|g" \
 		>"$ZED_SECURE"
 
 	run chmod +x "$ZED_SECURE"
@@ -1455,7 +1679,7 @@ apply_uid_wide_strict_firewall() {
 
 	uid=$(id -u)
 	warn "DANGEROUS: UID-wide strict firewall enabled for UID $uid"
-	warn "This blocks ALL outbound IPv4 traffic for every process you run, not just Zed."
+	warn "This blocks ALL outbound IPv4 and IPv6 traffic for every process you run, except loopback."
 	warn "Browsers, git, package managers, SSH, and other tools may lose network access."
 	warn "This is NOT the same as the per-process network sandbox or /etc/hosts blocklist."
 	warn "To remove: sudo nft delete table inet zed_uid_strict"
@@ -1466,7 +1690,7 @@ apply_uid_wide_strict_firewall() {
 	fi
 
 	if [ "$DRY_RUN" -eq 1 ]; then
-		log "Would create nft rules blocking outbound for uid $uid except loopback"
+		log "Would create IPv4 and IPv6 nft rules blocking outbound for uid $uid except loopback"
 		return 0
 	fi
 
@@ -1487,6 +1711,7 @@ delete table inet zed_uid_strict
 add table inet zed_uid_strict
 add chain inet zed_uid_strict output { type filter hook output priority 0; policy accept; }
 add rule inet zed_uid_strict output meta skuid $uid ip daddr != 127.0.0.0/8 drop
+add rule inet zed_uid_strict output meta skuid $uid ip6 daddr != ::1 drop
 EOF
 
 	if [ "$(id -u)" -eq 0 ]; then
@@ -1548,7 +1773,14 @@ EOF
 		printf 'LLM model:  %s\n' "$ZED_LLM_MODEL"
 	fi
 
-	printf 'Sandbox:    %s\n' "$( [ "$ENABLE_NETWORK_SANDBOX" -eq 1 ] && echo "enabled (systemd-run localhost-only)" || echo "disabled" )"
+	if [ "$ENABLE_NETWORK_SANDBOX" -eq 1 ] && [ "$DRY_RUN" -eq 1 ]; then
+		sandbox_summary="requested (not verified in dry-run)"
+	elif [ "$ENABLE_NETWORK_SANDBOX" -eq 1 ]; then
+		sandbox_summary="verified (system service; direct IP egress is localhost-only)"
+	else
+		sandbox_summary="disabled"
+	fi
+	printf 'Sandbox:    %s\n' "$sandbox_summary"
 	printf 'Blocklist:  %s\n' "$( [ "$ENABLE_ENDPOINT_BLOCKLIST" -eq 1 ] && echo "enabled (hosts only; no global nft rules)" || echo "disabled" )"
 	if [ "$REPLACE_ZED_CLI" -eq 1 ]; then
 		printf 'CLI alias:  %s -> %s\n' "$ZED_CLI" "$ZED_SECURE"
@@ -1580,6 +1812,9 @@ IMPORTANT limitations:
   - Do NOT sign in to Zed account or add cloud API keys
   - Settings alone do NOT guarantee zero network egress with AI enabled
   - Local-AI installs enable network sandbox by default; use --no-network-sandbox to opt out
+  - Sandboxed launches may request administrator authentication every time
+  - Sandboxed Zed uses separate data under ~/.local/share/zed-secure/<channel>
+  - The sandbox blocks direct non-loopback IP traffic, not Unix sockets, D-Bus, or localhost brokers
   - Endpoint blocklist is hosts-only (no global nft rules) and does NOT replace sandbox
   - Do NOT launch $ZED_APP_BIN directly; it bypasses zed-secure protections
   - Use --replace-zed-cli to make 'zed' in PATH point at zed-secure
@@ -1652,6 +1887,7 @@ main() {
 	fi
 	write_settings
 	install_enforce_helper
+	install_sandbox_helper
 	write_zed_secure_wrapper
 	replace_zed_cli_symlink
 	patch_desktop_entry

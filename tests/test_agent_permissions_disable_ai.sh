@@ -17,9 +17,13 @@ fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT HUP TERM
-mkdir -p "$tmp/zed"
+profile="$tmp/profile"
+mkdir -p "$tmp/zed" "$profile/.local/zed.app/bin"
+printf '#!/bin/sh\nexit 0\n' >"$profile/.local/zed.app/bin/zed"
+chmod +x "$profile/.local/zed.app/bin/zed"
 
-XDG_CONFIG_HOME=$tmp "$INSTALLER" --disable-ai >/dev/null 2>&1 \
+HOME=$profile XDG_CONFIG_HOME=$tmp XDG_DATA_HOME="$profile/.local/share" \
+	"$INSTALLER" --disable-ai >/dev/null 2>&1 \
 	|| fail '--disable-ai install failed'
 
 if ! jq empty "$tmp/zed/settings.json" 2>/dev/null; then
@@ -54,11 +58,14 @@ cat >"$tmp/zed/settings.json" <<'EOF'
 }
 EOF
 
-XDG_CONFIG_HOME=$tmp "$INSTALLER" --disable-ai --merge-config >/dev/null 2>&1 \
+HOME=$profile XDG_CONFIG_HOME=$tmp XDG_DATA_HOME="$profile/.local/share" \
+	"$INSTALLER" --disable-ai --merge-config >/dev/null 2>&1 \
 	|| fail 'merge-config with --disable-ai failed'
 
 fetch_merged=$(jq -r '.agent.tool_permissions.tools.fetch.default' "$tmp/zed/settings.json")
 [ "$fetch_merged" = "deny" ] || fail "merge: expected fetch.default=deny, got $fetch_merged"
+search_merged=$(jq -r '.agent.tool_permissions.tools.search_web.default' "$tmp/zed/settings.json")
+[ "$search_merged" = "deny" ] || fail "merge: expected search_web.default=deny, got $search_merged"
 
 custom=$(jq -r '.custom_key' "$tmp/zed/settings.json")
 [ "$custom" = "true" ] || fail "merge: expected custom_key preserved, got $custom"

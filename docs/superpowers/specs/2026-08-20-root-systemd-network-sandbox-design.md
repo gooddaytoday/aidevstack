@@ -42,7 +42,8 @@ authentication may be requested on every launch. The service uses:
 - `--service-type=exec`, `--wait`, `--pipe`, and `--collect`;
 - the invoking numeric UID and GID, so Zed never runs as root and systemd
   initializes the user's supplementary groups;
-- `ExitType=cgroup`, so the service remains active while any Zed child lives;
+- `KillMode=control-group`, so children cannot survive the foreground service
+  process or escape filtering if it exits;
 - `IPAddressDeny=any` and `IPAddressAllow=localhost`;
 - the caller's working directory;
 - an explicit allowlist of GUI/session environment variables rather than
@@ -52,9 +53,11 @@ The environment allowlist covers `HOME`, `PATH`, the XDG config/cache paths, an
 `XDG_RUNTIME_DIR` derived from the numeric UID, the corresponding local user
 D-Bus address, Wayland/X11 display variables, desktop/session variables,
 locale variables, `SHELL`, and `SSH_AUTH_SOCK`. Provider API keys remain
-cleared before launch. Commands executed with privilege use absolute paths;
-all user-controlled arguments reach only a process that has already dropped to
-the invoking user.
+cleared before launch. Commands executed with privilege use canonical
+executables whose files and entire directory chains are root-owned and not
+group/world writable; caller `PATH` entries cannot select the privileged
+backend. All user-controlled arguments reach only a process that has already
+dropped to the invoking user.
 
 The protected instance gets a dedicated, mode-0700 `XDG_DATA_HOME` below
 `~/.local/share/zed-secure/<channel>`. Zed places its Linux IPC socket below its
@@ -66,39 +69,49 @@ selected `XDG_CONFIG_HOME`. The implementation does not rely on Zed's
 `--user-data-dir` option because released Linux CLI versions have not applied
 it reliably when another instance exists.
 
-If interactive `sudo` is unavailable from a desktop launcher, the launch fails
-with instructions to use a terminal or configure a trusted askpass agent. It
-must never fall back to a direct Zed execution. No broad `NOPASSWD` rule for
-`systemd-run` is installed or recommended.
+Without a controlling terminal, the launcher requires an absolute
+`SUDO_ASKPASS` executable with a root/user-owned, non-writable file and parent
+chain, canonicalizes the path, and invokes `sudo -A`. Otherwise it fails with
+instructions to use a terminal or configure that trusted helper. It must never
+fall back to a direct Zed execution. No broad `NOPASSWD` rule for `systemd-run`
+is installed or recommended.
 
 ### Sandbox probe and exec helper
 
 Add a dependency-free Python helper shipped beside the installer and copied to
 the user's `~/.local/share/zed-secure` directory. The helper always runs as the
-unprivileged target user inside the transient service. It has two modes:
+unprivileged target user inside the transient service for enforcement. It has
+three narrow commands:
 
-1. `--probe-only`, used during installation;
-2. probe followed by `execve()` of the configured Zed binary with
+1. `probe`, used inside the installation-time service;
+2. `launch`, which constructs the privileged transient-service request;
+3. `inside`, which probes and then `execve()`s the configured Zed binary with
    `--foreground` and the original arguments.
 
-The probe performs observable enforcement checks rather than inspecting unit
-properties:
+The probe verifies the system manager's normalized `IPAddressDeny` and
+`IPAddressAllow` values and then performs observable enforcement checks; unit
+properties alone are not accepted as proof:
 
 1. discover active non-loopback local interface addresses using Linux standard
    interfaces (`socket.if_nameindex`, `SIOCGIFADDR`, and `/proc/net/if_inet6`);
 2. for every configured address family, exchange a UDP datagram over that
    family's loopback address (`127.0.0.1` or `::1`);
-3. attempt a UDP send to a listener bound to a discovered non-loopback address
-   for that family;
-4. accept only `EPERM` or `EACCES` as proof that the BPF filter denied the send.
+3. attempt both a UDP send and a TCP connection to listeners bound to a
+   discovered non-loopback address for that family, with short timeouts;
+4. require `EPERM` or `EACCES` from UDP as positive proof that the cgroup filter
+   is attached; then require the TCP connection not to succeed. systemd's
+   cgroup-skb program may silently drop the TCP SYN, so a TCP timeout is accepted
+   only after the same-family UDP permission denial has already been observed.
 
 IPv4 and IPv6 are evaluated independently. A family is configured only when an
 UP, non-loopback interface has a local address in that family. Every configured
 family must pass both its loopback exchange and its permission-denied
 non-loopback send. IPv6 with only `::1` is therefore skipped, not treated as a
 partially verified family. At least one family must be configured and
-positively denied; otherwise the result is inconclusive and fails closed. No
-TEST-NET or route-error fallback is accepted because `ENETUNREACH`, timeout,
+positively denied; otherwise the result is inconclusive and fails closed. A UDP
+timeout, route failure, or refusal is not positive evidence; a TCP timeout is
+only a secondary non-escape check after positive same-family UDP evidence. No
+TEST-NET or route-error fallback is accepted because `ENETUNREACH`, UDP timeout,
 and similar errors do not prove that cgroup filtering is active.
 
 The launcher passes the unique expected unit name to the helper. The helper
@@ -160,8 +173,9 @@ Add focused tests for the following public behaviors:
 - the generated command targets the system manager, includes the fixed IP
   properties and original UID/GID, and preserves arguments without shell
   interpolation;
-- the helper accepts loopback, rejects an unsandboxed non-loopback send, and
-  accepts only permission denial as positive sandbox evidence;
+- the helper accepts loopback, rejects an unsandboxed non-loopback send,
+  requires a UDP permission denial as positive sandbox evidence, and accepts a
+  TCP timeout only after that same-family proof;
 - IPv4 and IPv6 are checked independently, loopback-only IPv6 is skipped, and
   a machine with no configured non-loopback family is rejected;
 - a user-manager cgroup with the expected unit basename is rejected;

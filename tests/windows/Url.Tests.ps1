@@ -46,6 +46,17 @@ Describe 'LLM URL validation' {
 
     It 'derives the completions URL preserving the query' {
         $r = Run-Url -Url 'http://127.0.0.1:8080/v1?api_version=2024'
+        $r.ExitCode | Should -Be 0
         Should-ContainText $r.Output 'LLM completions: http://127.0.0.1:8080/v1/completions?api_version=2024'
+    }
+
+    It 'normalizes a trailing slash before deriving completions' -ForEach @(
+        @{ Url = 'http://127.0.0.1:8080/v1/'; Expected = 'http://127.0.0.1:8080/v1/completions' }
+        @{ Url = 'http://127.0.0.1:8080/v1/?api_version=2024'; Expected = 'http://127.0.0.1:8080/v1/completions?api_version=2024' }
+    ) {
+        $r = Run-Url -Url $Url
+        $r.ExitCode | Should -Be 0
+        Should-ContainText $r.Output "LLM completions: $Expected"
+        Should-NotContainText $r.Output '/v1//completions'
     }
 }

@@ -10,14 +10,14 @@ fail() {
 	exit 1
 }
 
-assert_sandbox_enabled() {
+assert_sandbox_requested() {
 	label=$1
 	shift
 	out=$("$@" 2>&1) || fail "$label: dry-run failed"
-	if ! printf '%s\n' "$out" | grep -q 'Sandbox:.*enabled'; then
-		fail "$label: expected Sandbox enabled in output"
+	if ! printf '%s\n' "$out" | grep -q 'Sandbox:.*requested (not verified in dry-run)'; then
+		fail "$label: expected Sandbox requested/unverified in output"
 	fi
-	printf 'OK: %s -> sandbox enabled\n' "$label"
+	printf 'OK: %s -> sandbox requested/unverified\n' "$label"
 }
 
 assert_sandbox_disabled() {
@@ -30,7 +30,14 @@ assert_sandbox_disabled() {
 	printf 'OK: %s -> sandbox disabled\n' "$label"
 }
 
-assert_sandbox_enabled 'local-AI default' \
+out=$("$INSTALLER" --llm-model test-model --dry-run 2>&1) \
+	|| fail 'local-AI dry-run failed'
+if ! printf '%s\n' "$out" | grep -q 'Sandbox:.*requested (not verified in dry-run)'; then
+	fail 'local-AI dry-run must not claim an unverified sandbox is enabled'
+fi
+printf 'OK: local-AI dry-run reports sandbox as requested but unverified\n'
+
+assert_sandbox_requested 'local-AI default' \
 	"$INSTALLER" --llm-model test-model --dry-run
 
 out=$("$INSTALLER" --llm-model test-model --no-network-sandbox --dry-run 2>&1) \
@@ -46,7 +53,7 @@ printf 'OK: --no-network-sandbox -> warning + sandbox disabled\n'
 assert_sandbox_disabled '--disable-ai' \
 	"$INSTALLER" --disable-ai --dry-run
 
-assert_sandbox_enabled 'ZED_LLM_MODEL env' \
+assert_sandbox_requested 'ZED_LLM_MODEL env' \
 	env ZED_LLM_MODEL=env-model "$INSTALLER" --dry-run
 
 if "$INSTALLER" --llm-model m --enable-network-sandbox --no-network-sandbox --dry-run \

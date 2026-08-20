@@ -135,8 +135,10 @@ function Initialize-ZedState {
         'o4505698048008192.ingest.us.sentry.io'
     )
     $script:CloudKeyVars = @(
-        'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_API_KEY', 'XAI_API_KEY', 'GEMINI_API_KEY',
-        'MISTRAL_API_KEY', 'TOGETHER_AI_API_KEY', 'VERCEL_AI_GATEWAY_API_KEY', 'OLLAMA_API_KEY'
+        'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_AI_API_KEY',
+        'GEMINI_API_KEY', 'MISTRAL_API_KEY', 'DEEPSEEK_API_KEY', 'XAI_API_KEY',
+        'OPENCODE_API_KEY', 'OPENROUTER_API_KEY', 'VERCEL_AI_GATEWAY_API_KEY',
+        'OLLAMA_API_KEY', 'LMSTUDIO_API_KEY', 'TOGETHER_AI_API_KEY'
     )
     $script:FirewallGroup       = 'zed-secure'
     $script:FirewallStrictGroup = 'zed-secure-strict'
@@ -314,8 +316,9 @@ function Get-ZedCompletionsUrl {
         $query = $parts[1]
         $pathBase = $parts[0]
     }
+    $pathBase = $pathBase.TrimEnd('/')
     if ($pathBase -match '/v1$') {
-        $completions = ($pathBase -replace '/$', '') + '/completions'
+        $completions = $pathBase + '/completions'
     } else {
         $completions = $pathBase + '/completions'
     }
@@ -402,8 +405,6 @@ function Resolve-ZedAppPath {
     $dir = Get-ZedChannelDirName $ChannelName
     $candidates = New-Object System.Collections.ArrayList
 
-    $cmd = Get-Command 'zed.exe' -ErrorAction SilentlyContinue
-    if ($cmd -and $cmd.Source) { [void]$candidates.Add($cmd.Source) }
     if ($env:LOCALAPPDATA) { [void]$candidates.Add((Join-Path $env:LOCALAPPDATA "Programs\$dir\Zed.exe")) }
     if ($env:ProgramFiles) { [void]$candidates.Add((Join-Path $env:ProgramFiles "$dir\Zed.exe")) }
 
@@ -415,13 +416,29 @@ function Resolve-ZedAppPath {
             if (Test-Path $root) {
                 foreach ($k in (Get-ChildItem $root -ErrorAction SilentlyContinue)) {
                     $name = $k.GetValue('DisplayName')
-                    if ($name -and $name -like 'Zed*') {
+                    $nameMatchesChannel = switch ($ChannelName) {
+                        'stable'  { $name -eq 'Zed' }
+                        'preview' { $name -like 'Zed Preview*' }
+                        'nightly' { $name -like 'Zed Nightly*' }
+                        'dev'     { $name -like 'Zed Dev*' }
+                        default   { $false }
+                    }
+                    if ($name -and $nameMatchesChannel) {
                         $loc = $k.GetValue('InstallLocation')
                         if ($loc) { [void]$candidates.Add((Join-Path $loc 'Zed.exe')) }
                     }
                 }
             }
         } catch { }
+    }
+
+    # PATH is only a fallback. Its parent directory must name the requested
+    # channel so one release cannot satisfy another channel's install.
+    $cmd = Get-Command 'zed.exe' -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source) {
+        $parentName = Split-Path (Split-Path $cmd.Source -Parent) -Leaf
+        $pathMatchesChannel = $parentName -eq $dir
+        if ($pathMatchesChannel) { [void]$candidates.Add($cmd.Source) }
     }
 
     foreach ($c in $candidates) {
@@ -718,13 +735,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$($script:LauncherPs1)" %*
 
 # --- GUI / CLI integration ---
 
-function Get-ZedShortcutPaths {
-    $paths = New-Object System.Collections.ArrayList
+function Get-ZedShortcutCandidates {
     $cands = @()
     if ($env:APPDATA) { $cands += (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Zed.lnk') }
     if ($env:ProgramData) { $cands += (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Zed.lnk') }
     if ($env:USERPROFILE) { $cands += (Join-Path $env:USERPROFILE 'Desktop\Zed.lnk') }
     if ($env:PUBLIC) { $cands += (Join-Path $env:PUBLIC 'Desktop\Zed.lnk') }
+    return $cands
+}
+
+function Get-ZedShortcutPaths {
+    $paths = New-Object System.Collections.ArrayList
+    $cands = Get-ZedShortcutCandidates
     foreach ($c in $cands) { if (Test-Path -LiteralPath $c) { [void]$paths.Add($c) } }
     return $paths
 }
@@ -951,9 +973,7 @@ function Invoke-Uninstall {
 }
 
 function Restore-Shortcuts {
-    foreach ($lnk in @(
-            (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Zed.lnk'),
-            (Join-Path $env:USERPROFILE 'Desktop\Zed.lnk'))) {
+    foreach ($lnk in (Get-ZedShortcutCandidates)) {
         $dir = Split-Path -Parent $lnk
         $name = Split-Path -Leaf $lnk
         if (-not (Test-Path -LiteralPath $dir)) { continue }

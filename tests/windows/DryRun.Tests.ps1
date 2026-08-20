@@ -26,6 +26,7 @@ Describe 'Dry-run is non-destructive' {
         $root = Join-Path $TestDrive ([guid]::NewGuid())
         $env1 = New-ZedTestEnv -Root $root
         $r = Invoke-ZedScript -Script 'Install-ZedSecure.ps1' -Arguments @('-DisableAi', '-EnableEndpointBlocklist', '-DryRun') -EnvVars $env1
+        $r.ExitCode | Should -Be 0
         Should-ContainText $r.Output 'Would append hosts blocklist'
         Should-NotContainText $r.Output 'Applied hosts blocklist'
         (Test-Path -LiteralPath $env1.ZED_SECURE_HOSTS_PATH) | Should -BeFalse

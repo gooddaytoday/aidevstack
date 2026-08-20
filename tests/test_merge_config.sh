@@ -17,7 +17,9 @@ fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT HUP TERM
-mkdir -p "$tmp/zed"
+mkdir -p "$tmp/zed" "$tmp/.local/zed.app/bin"
+printf '#!/bin/sh\nexit 0\n' >"$tmp/.local/zed.app/bin/zed"
+chmod +x "$tmp/.local/zed.app/bin/zed"
 
 cat >"$tmp/zed/settings.json" <<'EOF'
 {
@@ -38,7 +40,8 @@ cat >"$tmp/zed/settings.json" <<'EOF'
 }
 EOF
 
-XDG_CONFIG_HOME=$tmp "$INSTALLER" --disable-ai --merge-config >/dev/null 2>&1 \
+HOME=$tmp XDG_CONFIG_HOME=$tmp XDG_DATA_HOME="$tmp/.local/share" \
+	"$INSTALLER" --disable-ai --merge-config >/dev/null 2>&1 \
 	|| fail 'merge-config install failed'
 
 if [ ! -f "$tmp/zed/settings.json" ]; then
@@ -61,7 +64,7 @@ tab_size=$(jq -r '.editor.tab_size' "$tmp/zed/settings.json")
 [ "$custom_theme" = "user-dark" ] || fail "expected custom_theme preserved, got $custom_theme"
 [ "$tab_size" = "4" ] || fail "expected editor.tab_size preserved, got $tab_size"
 
-if jq -e '.telemetry.extra_old' "$tmp/zed/settings.json" >/dev/null 2>&1; then
+if jq -e '.telemetry | has("extra_old")' "$tmp/zed/settings.json" >/dev/null 2>&1; then
 	fail 'telemetry.extra_old should not survive secure-template overwrite'
 fi
 

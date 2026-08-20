@@ -55,8 +55,19 @@ out=$("$LOCAL_LLM" test-model --dry-run 2>&1) || fail 'local-llm dry-run should 
 assert_contains 'local-llm dry-run marker' '[dry-run]' "$out"
 assert_contains 'local-llm model in summary' 'LLM model:  test-model' "$out"
 assert_contains 'local-llm AI enabled' 'AI mode:    local OpenAI-compatible' "$out"
-assert_contains 'local-llm sandbox default' 'Sandbox:    enabled' "$out"
+assert_contains 'local-llm standard API URL' 'LLM API:    http://127.0.0.1:8080/v1' "$out"
+assert_contains 'local-llm sandbox default' \
+	'Sandbox:    requested (not verified in dry-run)' "$out"
 assert_contains 'local-llm blocklist preset' 'hosts blocklist' "$out"
+case "$out" in
+*api_version=2024*) fail 'local-llm preset must not force a vendor-specific api_version' ;;
+esac
 printf 'OK: install-zed-local-llm.sh test-model --dry-run\n'
+
+out=$(ZED_LLM_API_URL='http://localhost:8080/v1?custom=1' \
+	"$LOCAL_LLM" test-model --dry-run 2>&1) || fail 'local-llm env URL dry-run should exit 0'
+assert_contains 'local-llm honors ZED_LLM_API_URL' \
+	'LLM API:    http://localhost:8080/v1?custom=1' "$out"
+printf 'OK: install-zed-local-llm.sh honors ZED_LLM_API_URL\n'
 
 printf 'All preset installer tests passed.\n'

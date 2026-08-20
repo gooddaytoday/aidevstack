@@ -125,7 +125,13 @@ Describe 'Launcher + enforce helper' {
         $body = Get-Content -Raw -LiteralPath $launcher
         $body | Should -Match ([regex]::Escape('ZED_SECURE_ENFORCE_SETTINGS'))
         $body | Should -Match ([regex]::Escape('Enforce-ZedSettings.ps1'))
-        $body | Should -Match ([regex]::Escape('OPENAI_API_KEY'))
+        foreach ($key in @(
+                'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_AI_API_KEY',
+                'GEMINI_API_KEY', 'MISTRAL_API_KEY', 'DEEPSEEK_API_KEY', 'XAI_API_KEY',
+                'OPENCODE_API_KEY', 'OPENROUTER_API_KEY', 'VERCEL_AI_GATEWAY_API_KEY',
+                'OLLAMA_API_KEY', 'LMSTUDIO_API_KEY', 'TOGETHER_AI_API_KEY')) {
+            $body | Should -Match ([regex]::Escape($key))
+        }
         (Test-Path -LiteralPath (Join-Path $e.LOCALAPPDATA 'zed-secure\Enforce-ZedSettings.ps1')) | Should -BeTrue
         (Test-Path -LiteralPath (Join-Path $e.LOCALAPPDATA 'zed-secure\ZedSecuritySettings.psm1')) | Should -BeTrue
     }

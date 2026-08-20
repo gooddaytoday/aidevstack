@@ -11,7 +11,7 @@ plus the Windows-specific gaps and out-of-scope items. User docs:
 |----|-------------------|------------------|--------|
 | **W1** | R1: no machine-wide drop by default (endpoint blocklist is hosts-only) | Endpoint blocklist is hosts-only; the per-app firewall rule is scoped to `Zed.exe`, not machine-wide. Machine-wide blocking is opt-in only (`-MachineWideStrictFirewall`). | Full |
 | **W2** | R2: channel-specific app paths | `Get-ZedChannelDirName` maps `stable/preview/nightly/dev` to `%LOCALAPPDATA%\Programs\Zed[ Preview/Nightly/Dev]`; `Resolve-ZedAppPath` also checks PATH and the registry Uninstall keys. | Full (path resolution multi-source) |
-| **W3** | R3: network sandbox on by default for local-AI | `Set-LocalAiSandboxDefault` enables the per-app Windows Firewall rule when `-LlmModel` is set and not `-DisableAi`; `-NoNetworkSandbox` opts out with the same warning. | Full (mechanism differs: persistent firewall vs per-launch `systemd-run`) |
+| **W3** | R3: network sandbox on by default for local-AI | `Set-LocalAiSandboxDefault` enables the per-app Windows Firewall rule when `-LlmModel` is set and not `-DisableAi`; `-NoNetworkSandbox` opts out with the same warning. | Full (mechanism differs: persistent firewall vs an authenticated transient Linux system service) |
 | **W4** | R4: IPv6 loopback URL validation | `Get-ZedUrlHost` / `Test-ZedLoopbackUrl` accept `127.0.0.1`, `localhost`, `[::1]`. | Full |
 | **W5** | R5: URL validation with query/path | `Test-UrlValid` (char allowlist, `@` rejected, http/https only); `Get-ZedCompletionsUrl` preserves the query when deriving `/completions`. | Full |
 | **W6** | R6: idempotent blocklist | `Invoke-ZedFirewallStep.ps1` uses the same begin/end markers; re-adding is a no-op. Firewall rules are idempotent by `-Group` (re-pointed, not duplicated). | Full |
@@ -27,7 +27,7 @@ plus the Windows-specific gaps and out-of-scope items. User docs:
 ## Windows-specific gaps (not present in the Linux tool)
 
 1. **Per-app firewall is process-scoped.** The default sandbox blocks `Zed.exe` only. Linux's
-   `systemd-run --scope` confines the whole cgroup including child processes (language servers,
+   transient system service confines the whole cgroup including child processes (language servers,
    `node`, `git`, downloaded extension binaries). On Windows those run under different exe paths and
    are **not** blocked. Mitigations: the hosts blocklist (known domains) and `-MachineWideStrictFirewall`
    (full lockdown). Documented in the threat model and Known Limitations.

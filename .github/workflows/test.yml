@@ -8,7 +8,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Install test dependencies
         run: sudo apt-get update && sudo apt-get install -y jq
@@ -28,19 +30,21 @@ jobs:
   test-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Windows PowerShell 5.1 (baseline)
         shell: powershell
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
-          Install-Module Pester -MinimumVersion 5.5.0 -Force -Scope CurrentUser -SkipPublisherCheck
-          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -Scope CurrentUser
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
           .\tests\windows\Invoke-Tests.ps1
 
       - name: PowerShell 7 (compatibility leg)
         shell: pwsh
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
-          Install-Module Pester -MinimumVersion 5.5.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -Scope CurrentUser
           ./tests/windows/Invoke-Tests.ps1 -SkipAnalyzer

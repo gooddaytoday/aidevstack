@@ -14,7 +14,7 @@ assert_path() {
 	channel=$1
 	expected_substr=$2
 	out=$(ZED_CHANNEL=$channel "$INSTALLER" --disable-ai --dry-run 2>&1) || fail "dry-run failed for channel=$channel"
-	if ! printf '%s\n' "$out" | grep -q "$expected_substr"; then
+	if ! printf '%s\n' "$out" | grep -Fq -- "$expected_substr"; then
 		fail "channel=$channel: expected path containing '$expected_substr' in output"
 	fi
 	printf 'OK: channel=%s -> %s\n' "$channel" "$expected_substr"

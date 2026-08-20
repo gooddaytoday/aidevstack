@@ -31,9 +31,13 @@ out=$("$INSTALLER" \
 	--i-accept-uid-wide-firewall \
 	--disable-ai \
 	--dry-run 2>&1) || fail 'accepted dry-run failed'
-if ! printf '%s\n' "$out" | grep -q 'Would create nft rules blocking outbound'; then
-	fail 'expected Would create nft rules in dry-run output'
+if ! printf '%s\n' "$out" | grep -Fq 'Would create IPv4 and IPv6 nft rules blocking outbound'; then
+	fail 'expected IPv4 and IPv6 nft rules in dry-run output'
 fi
+grep -Fq 'ip daddr != 127.0.0.0/8 drop' "$INSTALLER" \
+	|| fail 'missing IPv4 UID firewall rule'
+grep -Fq 'ip6 daddr != ::1 drop' "$INSTALLER" \
+	|| fail 'missing IPv6 UID firewall rule'
 printf 'OK: both flags + dry-run succeeds\n'
 
 help=$("$INSTALLER" --help 2>&1) || fail '--help failed'

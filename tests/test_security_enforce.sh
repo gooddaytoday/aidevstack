@@ -23,7 +23,10 @@ sh -n "$ENFORCE" || fail 'syntax check zed-security-settings.sh'
 # Security-only overlay preserves custom keys
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT HUP TERM
-mkdir -p "$tmp/zed"
+profile="$tmp/profile"
+mkdir -p "$tmp/zed" "$profile/.local/zed.app/bin"
+printf '#!/bin/sh\nexit 0\n' >"$profile/.local/zed.app/bin/zed"
+chmod +x "$profile/.local/zed.app/bin/zed"
 
 cat >"$tmp/zed/settings.json" <<'EOF'
 {
@@ -33,7 +36,8 @@ cat >"$tmp/zed/settings.json" <<'EOF'
 }
 EOF
 
-XDG_CONFIG_HOME=$tmp "$INSTALLER" --disable-ai >/dev/null 2>&1 \
+HOME=$profile XDG_CONFIG_HOME=$tmp XDG_DATA_HOME="$profile/.local/share" \
+	"$INSTALLER" --disable-ai >/dev/null 2>&1 \
 	|| fail 'install with existing settings failed'
 
 metrics=$(jq -r '.telemetry.metrics' "$tmp/zed/settings.json")
@@ -53,7 +57,8 @@ cat >"$tmp/zed/settings.json" <<'EOF'
   "auto_update": true
 }
 EOF
-XDG_CONFIG_HOME=$tmp "$INSTALLER" --repair-settings >/dev/null 2>&1 \
+HOME=$profile XDG_CONFIG_HOME=$tmp XDG_DATA_HOME="$profile/.local/share" \
+	"$INSTALLER" --repair-settings >/dev/null 2>&1 \
 	|| fail '--repair-settings on corrupted settings failed'
 
 metrics=$(jq -r '.telemetry.metrics' "$tmp/zed/settings.json")
@@ -111,7 +116,8 @@ printf 'OK: enforce uses share-dir template backup\n'
 home=$(mktemp -d)
 trap 'rm -rf "$tmp" "$home"' EXIT INT HUP TERM
 mkdir -p "$home/.config/zed" "$home/.local/zed.app/bin"
-printf '#!/bin/sh\nexit 0\n' >"$home/.local/zed.app/bin/zed"
+printf '#!/bin/sh\n[ -z "${ZED_TEST_ENV_CAPTURE:-}" ] || env >"$ZED_TEST_ENV_CAPTURE"\nexit 0\n' \
+	>"$home/.local/zed.app/bin/zed"
 chmod +x "$home/.local/zed.app/bin/zed"
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
 	HOME=$home XDG_CONFIG_HOME="$home/.config" "$INSTALLER" --disable-ai >/dev/null 2>&1 \
@@ -131,10 +137,28 @@ cat >"$home/.config/zed/settings.json" <<'EOF'
   "auto_update": true
 }
 EOF
-PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-	HOME=$home "$wrapper" --version >/dev/null 2>&1 || true
+env_capture="$home/zed-env.txt"
+OPENAI_API_KEY=secret ANTHROPIC_API_KEY=secret GOOGLE_API_KEY=secret \
+	GOOGLE_AI_API_KEY=secret GEMINI_API_KEY=secret MISTRAL_API_KEY=secret \
+	DEEPSEEK_API_KEY=secret XAI_API_KEY=secret OPENCODE_API_KEY=secret \
+	OPENROUTER_API_KEY=secret VERCEL_AI_GATEWAY_API_KEY=secret \
+	OLLAMA_API_KEY=secret LMSTUDIO_API_KEY=secret TOGETHER_AI_API_KEY=secret \
+	ZED_TEST_ENV_CAPTURE="$env_capture" \
+	PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+	HOME=$home XDG_CONFIG_HOME="$home/.config" \
+	"$wrapper" --version >/dev/null 2>&1 || fail 'wrapper launch failed'
 metrics=$(jq -r '.telemetry.metrics' "$home/.config/zed/settings.json")
 [ "$metrics" = "false" ] || fail "wrapper E2E: expected metrics false after launch, got $metrics"
 printf 'OK: zed-secure launch enforces telemetry off\n'
+
+for key in OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GOOGLE_AI_API_KEY \
+	GEMINI_API_KEY MISTRAL_API_KEY DEEPSEEK_API_KEY XAI_API_KEY OPENCODE_API_KEY \
+	OPENROUTER_API_KEY VERCEL_AI_GATEWAY_API_KEY OLLAMA_API_KEY LMSTUDIO_API_KEY \
+	TOGETHER_AI_API_KEY; do
+	if grep -q "^${key}=" "$env_capture"; then
+		fail "wrapper leaked provider credential: $key"
+	fi
+done
+printf 'OK: zed-secure wrapper clears documented provider API keys\n'
 
 printf 'All security enforce tests passed.\n'

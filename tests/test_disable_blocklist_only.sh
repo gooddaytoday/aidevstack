@@ -42,7 +42,7 @@ out=$("$INSTALLER" --disable-endpoint-blocklist --disable-ai --dry-run 2>&1) \
 assert_contains 'hosts cleanup combo' 'Would remove hosts blocklist markers' "$out"
 assert_contains 'removed message combo' 'Endpoint blocklist removed' "$out"
 assert_not_contains 'no settings write combo' 'Would write' "$out"
-assert_not_contains 'no wrapper write combo' 'Would write' "$out"
+assert_not_contains 'no wrapper write combo' 'zed-secure' "$out"
 assert_not_contains 'no install combo' 'Installing Zed' "$out"
 printf 'OK: --disable-endpoint-blocklist --disable-ai dry-run exits without reinstall\n'
 

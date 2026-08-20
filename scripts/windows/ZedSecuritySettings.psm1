@@ -376,6 +376,10 @@ function Test-ZedSecuritySettings {
         Write-ZedWarn 'telemetry.diagnostics is not false (JSONC; text check)'
         $ok = $false
     }
+    if ($text -notmatch '"auto_update"\s*:\s*false\b') {
+        Write-ZedWarn 'auto_update is not false (JSONC; text check)'
+        $ok = $false
+    }
     return $ok
 }
 

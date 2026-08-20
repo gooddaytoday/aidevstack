@@ -55,6 +55,7 @@ esac
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 INSTALLER="$SCRIPT_DIR/install-zed-secure.sh"
+LLM_API_URL=${ZED_LLM_API_URL:-http://127.0.0.1:8080/v1}
 
 if [ ! -f "$INSTALLER" ]; then
 	printf 'ERROR: missing %s\n' "$INSTALLER" >&2
@@ -64,6 +65,6 @@ fi
 exec sh "$INSTALLER" \
 	--install-deps \
 	--llm-model "$MODEL" \
-	--llm-api-url 'http://127.0.0.1:8080/v1?api_version=2024' \
+	--llm-api-url "$LLM_API_URL" \
 	--enable-endpoint-blocklist \
 	"$@"

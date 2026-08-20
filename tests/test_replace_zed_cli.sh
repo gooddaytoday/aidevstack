@@ -19,14 +19,6 @@ assert_contains() {
 	fi
 }
 
-out=$("$INSTALLER" --disable-ai --replace-zed-cli --dry-run 2>&1) \
-	|| fail 'replace-zed-cli dry-run failed'
-
-assert_contains 'would replace message' 'Would replace' "$out"
-assert_contains 'would backup message' 'Would backup existing' "$out"
-assert_contains 'ln symlink' 'ln -sf' "$out"
-printf 'OK: --replace-zed-cli dry-run shows backup and symlink actions\n'
-
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT HUP TERM
 mkdir -p "$tmp/.local/zed.app/bin" "$tmp/.local/bin" "$tmp/.config/zed"
@@ -35,6 +27,15 @@ printf '#!/bin/sh\nexit 0\n' >"$tmp/.local/zed.app/bin/zed"
 chmod +x "$tmp/.local/zed.app/bin/zed"
 printf '#!/bin/sh\necho upstream-zed\n' >"$tmp/.local/bin/zed"
 chmod +x "$tmp/.local/bin/zed"
+
+out=$(HOME=$tmp XDG_CONFIG_HOME="$tmp/.config" \
+	"$INSTALLER" --disable-ai --replace-zed-cli --dry-run 2>&1) \
+	|| fail 'replace-zed-cli dry-run failed'
+
+assert_contains 'would replace message' 'Would replace' "$out"
+assert_contains 'would backup message' 'Would backup existing' "$out"
+assert_contains 'ln symlink' 'ln -sf' "$out"
+printf 'OK: --replace-zed-cli dry-run shows backup and symlink actions\n'
 
 HOME=$tmp XDG_CONFIG_HOME="$tmp/.config" \
 	"$INSTALLER" --disable-ai --replace-zed-cli >/dev/null 2>&1 \
