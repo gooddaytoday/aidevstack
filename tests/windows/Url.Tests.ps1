@@ -2,8 +2,10 @@
 BeforeAll { . (Join-Path $PSScriptRoot '_Common.ps1') }
 
 Describe 'LLM URL validation' {
-    function Run-Url { param([string]$Url, [string[]]$Extra = @())
-        Invoke-ZedScript -Script 'Install-ZedSecure.ps1' -Arguments (@('-LlmModel', 'test-model', '-LlmApiUrl', $Url, '-DryRun') + $Extra)
+    BeforeAll {
+        function Run-Url { param([string]$Url, [string[]]$Extra = @())
+            Invoke-ZedScript -Script 'Install-ZedSecure.ps1' -Arguments (@('-LlmModel', 'test-model', '-LlmApiUrl', $Url, '-DryRun') + $Extra)
+        }
     }
 
     It 'accepts loopback URLs' -ForEach @(
