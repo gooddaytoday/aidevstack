@@ -35,9 +35,16 @@ Describe 'LLM URL validation' {
     It 'rejects invalid characters' -ForEach @(
         @{ Url = 'http://127.0.0.1:8080/v1?key=hello world' }
         @{ Url = 'http://user@127.0.0.1:8080/v1' }
-        @{ Url = 'http://127.0.0.1:8080/v1?q="bad"' }
     ) {
         $r = Run-Url -Url $Url
+        $r.ExitCode | Should -Not -Be 0
+        Should-ContainText $r.Output 'invalid'
+    }
+
+    It 'rejects quotes supplied through the environment' {
+        $r = Invoke-ZedScript -Script 'Install-ZedSecure.ps1' `
+            -Arguments @('-LlmModel', 'test-model', '-DryRun') `
+            -EnvVars @{ ZED_LLM_API_URL = 'http://127.0.0.1:8080/v1?q="bad"' }
         $r.ExitCode | Should -Not -Be 0
         Should-ContainText $r.Output 'invalid'
     }
