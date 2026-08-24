@@ -1,0 +1,1916 @@
+#!/bin/sh
+# install-zed-secure.sh — Privacy-first Zed installer for Linux
+# POSIX sh only. See README.md for usage and threat model.
+
+set -eu
+
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
+# shellcheck source=zed-security-settings.sh
+. "$SCRIPT_DIR/zed-security-settings.sh"
+
+# --- Defaults (overridable via env) ---
+INSTALL_DEPS=0
+DISABLE_AI=0
+DISABLE_LOCAL_EDIT_PREDICTIONS=0
+ALLOW_NONLOCAL_LLM=0
+ENABLE_NETWORK_SANDBOX=0
+ENABLE_ENDPOINT_BLOCKLIST=0
+DISABLE_ENDPOINT_BLOCKLIST=0
+MERGE_CONFIG=0
+REFRESH_LLM_CONFIG=0
+REPAIR_SETTINGS=0
+REGENERATE_TEMPLATE=0
+DO_NOT_HIDE_ENV_FILES=0
+ALLOW_NO_SANDBOX=0
+NO_NETWORK_SANDBOX=0
+SANDBOX_EXPLICIT_ENABLE=0
+UID_WIDE_STRICT_FIREWALL=0
+I_ACCEPT_UID_WIDE_FIREWALL=0
+YES=0
+DRY_RUN=0
+UNINSTALL=0
+OFFLINE=0
+REPLACE_ZED_CLI=0
+INSTALL_ACTION_REQUESTED=0
+
+ZED_CHANNEL="${ZED_CHANNEL:-stable}"
+ZED_VERSION="${ZED_VERSION:-latest}"
+ZED_INSTALLER_SHA256="${ZED_INSTALLER_SHA256:-}"
+ZED_LLM_MODEL="${ZED_LLM_MODEL:-}"
+ZED_LLM_API_URL="${ZED_LLM_API_URL:-http://127.0.0.1:8080/v1}"
+ZED_LLM_COMPLETIONS_URL="${ZED_LLM_COMPLETIONS_URL:-}"
+ZED_LLM_PROVIDER_NAME="${ZED_LLM_PROVIDER_NAME:-LocalLLM}"
+
+XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+ZED_CONFIG_DIR="$XDG_CONFIG_HOME/zed"
+ZED_SETTINGS="$ZED_CONFIG_DIR/settings.json"
+ZED_SETTINGS_TEMPLATE="$ZED_CONFIG_DIR/settings.zed-secure-template.json"
+ZED_SECURE_SHARE="$HOME/.local/share/zed-secure"
+ZED_ENFORCE_SCRIPT="$ZED_SECURE_SHARE/enforce-settings.sh"
+ZED_SETTINGS_TEMPLATE_SHARE="$ZED_SECURE_SHARE/settings-template.json"
+ZED_SANDBOX_HELPER_SOURCE="$SCRIPT_DIR/zed-sandbox-launcher.py"
+ZED_SANDBOX_HELPER="$ZED_SECURE_SHARE/zed-sandbox-launcher.py"
+SANDBOX_SYSTEMD_RUN_BIN=""
+SANDBOX_SUDO_BIN=""
+SANDBOX_PYTHON_BIN=""
+ZED_BIN_DIR="$HOME/.local/bin"
+ZED_SECURE="$ZED_BIN_DIR/zed-secure"
+ZED_CLI="$ZED_BIN_DIR/zed"
+ZED_APP_DIR=""
+ZED_APP_BIN=""
+ZED_DESKTOP_ID=""
+
+HOSTS_MARKER_BEGIN="# zed-secure-blocklist begin"
+HOSTS_MARKER_END="# zed-secure-blocklist end"
+
+# Exact domains only (no wildcards in /etc/hosts)
+BLOCKLIST_DOMAINS="
+cloud.zed.dev
+api2.amplitude.com
+api.openai.com
+api.anthropic.com
+generativelanguage.googleapis.com
+api.mistral.ai
+api.x.ai
+api.together.xyz
+o4505698048008192.ingest.us.sentry.io
+"
+
+# --- Helpers ---
+
+log() {
+	printf '==> %s\n' "$*"
+}
+
+warn() {
+	printf 'WARNING: %s\n' "$*" >&2
+}
+
+die() {
+	printf 'ERROR: %s\n' "$*" >&2
+	exit 1
+}
+
+have() {
+	command -v "$1" >/dev/null 2>&1
+}
+
+run() {
+	if [ "$DRY_RUN" -eq 1 ]; then
+		printf '[dry-run] %s\n' "$*"
+	else
+		log "Running: $*"
+		"$@"
+	fi
+}
+
+usage() {
+	cat <<'EOF'
+Usage: install-zed-secure.sh [OPTIONS]
+
+Privacy-first Zed installer for Linux with optional local OpenAI-compatible LLM.
+
+Preset installers (simpler entry points):
+  install-zed-no-ai.sh [OPTIONS]              --disable-ai preset; OPTIONS forwarded
+  install-zed-local-llm.sh MODEL [OPTIONS]  local LLM preset (MODEL first); OPTIONS forwarded
+
+Options:
+  --install-deps              Install system dependencies (requires sudo)
+  --disable-ai                Disable all AI features (disable_ai=true)
+  --llm-model MODEL           Local model name (required unless --disable-ai)
+  --llm-api-url URL           OpenAI-compatible API URL (default: http://127.0.0.1:8080/v1)
+  --llm-completions-url URL   Completions endpoint for edit predictions
+  --llm-provider-name NAME    Provider label in Zed UI (default: LocalLLM)
+  --disable-local-edit-predictions
+                              Disable inline edit predictions, keep Agent Panel
+  --allow-nonlocal-llm        Allow LLM URL not on loopback (not recommended)
+  --enable-network-sandbox    Require a verified root-managed system service with
+                              direct IP traffic limited to localhost
+                              (default for local-AI; sudo may prompt every launch)
+  --no-network-sandbox        Opt out of network sandbox (not recommended)
+  --allow-no-sandbox          Continue if network sandbox is unavailable
+  --enable-endpoint-blocklist Best-effort /etc/hosts only blocklist for cloud endpoints
+  --disable-endpoint-blocklist
+                              Remove endpoint blocklist markers
+  --uid-wide-strict-firewall  Block all outbound traffic for current UID (dangerous)
+  --i-accept-uid-wide-firewall
+                              Required with --uid-wide-strict-firewall (explicit consent)
+  --yes                       Skip confirmation pause for dangerous options
+  --do-not-hide-env-files     Do not exclude .env from file tree/search
+  --merge-config              Full merge: security keys + language_models from template
+  --refresh-llm-config        Security overlay + overwrite language_models from template
+  --repair-settings           Re-apply privacy overlay only (no Zed reinstall)
+  --regenerate-template       With --repair-settings: overwrite template from CLI flags (risky)
+  --offline                   Fail if network fetch is required; use with ZED_BUNDLE_PATH
+  --replace-zed-cli           Replace ~/.local/bin/zed symlink with zed-secure (opt-in)
+  --channel CHANNEL           Zed release channel: stable|preview|nightly|dev (default: stable)
+  --version VERSION           Zed version (default: latest)
+  --dry-run                   Print actions without executing
+  --uninstall                 Remove wrapper, desktop patches, blocklist markers
+  -h, --help                  Show this help
+
+Environment variables:
+  ZED_CHANNEL, ZED_VERSION, ZED_BUNDLE_PATH
+  ZED_INSTALLER_SHA256              Optional SHA-256 for https://zed.dev/install.sh
+  ZED_LLM_MODEL, ZED_LLM_API_URL, ZED_LLM_COMPLETIONS_URL, ZED_LLM_PROVIDER_NAME
+  XDG_CONFIG_HOME, XDG_DATA_HOME
+  ZED_SECURE_ENFORCE_SETTINGS  Set to 0 in zed-secure wrapper to skip privacy overlay (default: 1)
+  ZED_SECURE_ENFORCE_STRICT    Set to 1 to abort launch if privacy overlay fails (default: 0)
+
+Examples:
+  ./install-zed-secure.sh --repair-settings
+  ./install-zed-no-ai.sh
+  ./install-zed-local-llm.sh my-model
+  ./install-zed-secure.sh --disable-ai
+  ./install-zed-secure.sh --llm-model my-model --enable-endpoint-blocklist
+  ./install-zed-secure.sh --install-deps --llm-model qwen2.5-coder \
+    --enable-endpoint-blocklist --dry-run
+  ./install-zed-secure.sh --llm-model my-model --no-network-sandbox
+  ./install-zed-secure.sh --channel preview --disable-ai --dry-run
+  ZED_BUNDLE_PATH=/path/to/zed-linux-x86_64.tar.gz ./install-zed-secure.sh --disable-ai --offline
+
+EOF
+}
+
+# --- CLI parser ---
+
+parse_args() {
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		--install-deps)
+			INSTALL_DEPS=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
+		--disable-ai) DISABLE_AI=1 ;;
+		--llm-model)
+			shift
+			[ "$#" -gt 0 ] || die "--llm-model requires an argument"
+			ZED_LLM_MODEL=$1
+			INSTALL_ACTION_REQUESTED=1
+			;;
+		--llm-api-url)
+			shift
+			[ "$#" -gt 0 ] || die "--llm-api-url requires an argument"
+			ZED_LLM_API_URL=$1
+			;;
+		--llm-completions-url)
+			shift
+			[ "$#" -gt 0 ] || die "--llm-completions-url requires an argument"
+			ZED_LLM_COMPLETIONS_URL=$1
+			;;
+		--llm-provider-name)
+			shift
+			[ "$#" -gt 0 ] || die "--llm-provider-name requires an argument"
+			ZED_LLM_PROVIDER_NAME=$1
+			;;
+		--disable-local-edit-predictions) DISABLE_LOCAL_EDIT_PREDICTIONS=1 ;;
+		--allow-nonlocal-llm) ALLOW_NONLOCAL_LLM=1 ;;
+		--enable-network-sandbox)
+			ENABLE_NETWORK_SANDBOX=1
+			SANDBOX_EXPLICIT_ENABLE=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
+		--no-network-sandbox) NO_NETWORK_SANDBOX=1 ;;
+		--allow-no-sandbox) ALLOW_NO_SANDBOX=1 ;;
+		--enable-endpoint-blocklist)
+			ENABLE_ENDPOINT_BLOCKLIST=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
+		--disable-endpoint-blocklist) DISABLE_ENDPOINT_BLOCKLIST=1 ;;
+		--uid-wide-strict-firewall)
+			UID_WIDE_STRICT_FIREWALL=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
+		--i-accept-uid-wide-firewall)
+			I_ACCEPT_UID_WIDE_FIREWALL=1
+			;;
+		--yes) YES=1 ;;
+		--do-not-hide-env-files) DO_NOT_HIDE_ENV_FILES=1 ;;
+		--merge-config)
+			MERGE_CONFIG=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
+		--refresh-llm-config)
+			REFRESH_LLM_CONFIG=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
+		--repair-settings) REPAIR_SETTINGS=1 ;;
+		--regenerate-template) REGENERATE_TEMPLATE=1 ;;
+		--offline)
+			OFFLINE=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
+		--replace-zed-cli)
+			REPLACE_ZED_CLI=1
+			INSTALL_ACTION_REQUESTED=1
+			;;
+		--channel)
+			shift
+			[ "$#" -gt 0 ] || die "--channel requires an argument"
+			ZED_CHANNEL=$1
+			INSTALL_ACTION_REQUESTED=1
+			;;
+		--version)
+			shift
+			[ "$#" -gt 0 ] || die "--version requires an argument"
+			ZED_VERSION=$1
+			INSTALL_ACTION_REQUESTED=1
+			;;
+		--dry-run) DRY_RUN=1 ;;
+		--uninstall) UNINSTALL=1 ;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		-*)
+			die "unknown option: $1 (use --help)"
+			;;
+		*)
+			die "unexpected argument: $1 (use --help)"
+			;;
+		esac
+		shift
+	done
+}
+
+finalize_install_action_flags() {
+	if [ -n "$ZED_LLM_MODEL" ]; then
+		INSTALL_ACTION_REQUESTED=1
+	fi
+	if [ "$ZED_CHANNEL" != "stable" ]; then
+		INSTALL_ACTION_REQUESTED=1
+	fi
+	if [ "$ZED_VERSION" != "latest" ]; then
+		INSTALL_ACTION_REQUESTED=1
+	fi
+	if [ "$DISABLE_AI" -eq 1 ] && [ "$DISABLE_ENDPOINT_BLOCKLIST" -eq 0 ]; then
+		INSTALL_ACTION_REQUESTED=1
+	fi
+}
+
+validate_uid_wide_firewall_flags() {
+	if [ "$I_ACCEPT_UID_WIDE_FIREWALL" -eq 1 ] && [ "$UID_WIDE_STRICT_FIREWALL" -eq 0 ]; then
+		die "--i-accept-uid-wide-firewall requires --uid-wide-strict-firewall"
+	fi
+	if [ "$UID_WIDE_STRICT_FIREWALL" -eq 1 ] && [ "$I_ACCEPT_UID_WIDE_FIREWALL" -eq 0 ]; then
+		die "--uid-wide-strict-firewall requires --i-accept-uid-wide-firewall (see --help)"
+	fi
+}
+
+apply_local_ai_sandbox_defaults() {
+	[ "$DISABLE_AI" -eq 0 ] && [ -n "$ZED_LLM_MODEL" ] || return 0
+
+	if [ "$NO_NETWORK_SANDBOX" -eq 1 ] && [ "$SANDBOX_EXPLICIT_ENABLE" -eq 1 ]; then
+		die "Cannot use --enable-network-sandbox and --no-network-sandbox together"
+	fi
+
+	if [ "$NO_NETWORK_SANDBOX" -eq 1 ]; then
+		ENABLE_NETWORK_SANDBOX=0
+		warn "Network sandbox DISABLED. Cloud egress remains possible for Zed processes."
+		warn "This is NOT recommended when working with proprietary code."
+		return 0
+	fi
+
+	if [ "$ENABLE_NETWORK_SANDBOX" -eq 0 ]; then
+		ENABLE_NETWORK_SANDBOX=1
+		log "Network sandbox enabled by default for local-AI install"
+	fi
+}
+
+# --- Channel paths (mirror zed.dev/install.sh linux()) ---
+
+validate_zed_channel() {
+	case "$ZED_CHANNEL" in
+	stable | preview | nightly | dev) ;;
+	*)
+		die "unknown --channel: $ZED_CHANNEL (allowed: stable, preview, nightly, dev)"
+		;;
+	esac
+}
+
+resolve_zed_app_paths() {
+	suffix=""
+	case "$ZED_CHANNEL" in
+	stable) suffix="" ;;
+	*) suffix="-$ZED_CHANNEL" ;;
+	esac
+	ZED_APP_DIR="$HOME/.local/zed${suffix}.app"
+	case "$ZED_CHANNEL" in
+	stable) ZED_DESKTOP_ID="dev.zed.Zed" ;;
+	preview) ZED_DESKTOP_ID="dev.zed.Zed-Preview" ;;
+	nightly) ZED_DESKTOP_ID="dev.zed.Zed-Nightly" ;;
+	dev) ZED_DESKTOP_ID="dev.zed.Zed-Dev" ;;
+	esac
+	if [ -x "$ZED_APP_DIR/bin/zed" ]; then
+		ZED_APP_BIN="$ZED_APP_DIR/bin/zed"
+	elif [ -x "$ZED_APP_DIR/bin/cli" ]; then
+		ZED_APP_BIN="$ZED_APP_DIR/bin/cli"
+	else
+		ZED_APP_BIN="$ZED_APP_DIR/bin/zed"
+	fi
+}
+
+# --- Validation helpers ---
+
+validate_model_name() {
+	val=$1
+	case "$val" in
+	*\"* | *\\*)
+		die "invalid characters in llm-model: quotes or backslashes not allowed"
+		;;
+	esac
+	remainder=$(printf '%s' "$val" | tr -d 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
+	if [ -n "$remainder" ]; then
+		die "invalid characters in llm-model"
+	fi
+}
+
+validate_provider_name() {
+	val=$1
+	case "$val" in
+	*\"* | *\\*)
+		die "invalid characters in llm-provider-name: quotes or backslashes not allowed"
+		;;
+	esac
+	remainder=$(printf '%s' "$val" | tr -d 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-')
+	if [ -n "$remainder" ]; then
+		die "invalid characters in llm-provider-name"
+	fi
+}
+
+validate_url() {
+	val=$1
+	name=$2
+	case "$val" in
+	*\"* | *\\*)
+		die "invalid characters in $name: quotes or backslashes not allowed"
+		;;
+	http://* | https://*) ;;
+	*)
+		die "invalid $name: must start with http:// or https://"
+		;;
+	esac
+	remainder=$(printf '%s' "$val" | tr -d 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/[]?&=%#-')
+	if [ -n "$remainder" ]; then
+		die "invalid characters in $name"
+	fi
+	case "$val" in
+	http://*)
+		rest=${val#http://}
+		;;
+	https://*)
+		rest=${val#https://}
+		;;
+	esac
+	authority=$rest
+	case "$authority" in
+	*/*)
+		authority=${authority%%/*}
+		;;
+	esac
+	case "$authority" in
+	*\?*)
+		authority=${authority%%\?*}
+		;;
+	esac
+	case "$authority" in
+	*#*)
+		authority=${authority%%#*}
+		;;
+	esac
+	case "$authority" in
+	*@*)
+		die "invalid characters in $name: userinfo (@) not allowed"
+		;;
+	esac
+}
+
+url_authority_host() {
+	url=$1
+	rest=""
+
+	case "$url" in
+	http://*)
+		rest=${url#http://}
+		;;
+	https://*)
+		rest=${url#https://}
+		;;
+	*)
+		return 1
+		;;
+	esac
+
+	authority=$rest
+	case "$authority" in
+	*/*)
+		authority=${authority%%/*}
+		;;
+	esac
+	case "$authority" in
+	*\?*)
+		authority=${authority%%\?*}
+		;;
+	esac
+	case "$authority" in
+	*#*)
+		authority=${authority%%#*}
+		;;
+	esac
+	case "$authority" in
+	*@*)
+		return 1
+		;;
+	esac
+
+	case "$authority" in
+	[[]*)
+		host=${authority%%]*}
+		host="${host}]"
+		;;
+	*:*)
+		host=${authority%:*}
+		;;
+	*)
+		host=$authority
+		;;
+	esac
+
+	[ -n "$host" ] || return 1
+	printf '%s\n' "$host"
+}
+
+is_loopback_host() {
+	host=$1
+	case "$host" in
+	127.0.0.1 | localhost | [[]::1])
+		return 0
+		;;
+	esac
+	return 1
+}
+
+is_loopback_url() {
+	url=$1
+	host=$(url_authority_host "$url") || return 1
+	is_loopback_host "$host"
+}
+
+derive_completions_url() {
+	base=$1
+	query=""
+	path_base=$base
+
+	case "$path_base" in
+	*#*)
+		path_base=${path_base%%#*}
+		;;
+	esac
+	case "$path_base" in
+	*\?*)
+		query=${path_base#*\?}
+		path_base=${path_base%%\?*}
+		;;
+	esac
+
+	case "$path_base" in
+	*/v1)
+		completions="${path_base%/}/completions"
+		;;
+	*)
+		completions="${path_base}/completions"
+		;;
+	esac
+
+	if [ -n "$query" ]; then
+		completions="${completions}?${query}"
+	fi
+	printf '%s\n' "$completions"
+}
+
+validate_llm_urls() {
+	if [ "$DISABLE_AI" -eq 1 ]; then
+		return 0
+	fi
+
+	[ -n "$ZED_LLM_MODEL" ] || die "--llm-model is required unless --disable-ai is set"
+
+	validate_model_name "$ZED_LLM_MODEL"
+	validate_provider_name "$ZED_LLM_PROVIDER_NAME"
+	validate_url "$ZED_LLM_API_URL" "llm-api-url"
+
+	if [ -z "$ZED_LLM_COMPLETIONS_URL" ]; then
+		ZED_LLM_COMPLETIONS_URL=$(derive_completions_url "$ZED_LLM_API_URL")
+	fi
+	validate_url "$ZED_LLM_COMPLETIONS_URL" "llm-completions-url"
+
+	if [ "$ALLOW_NONLOCAL_LLM" -eq 0 ]; then
+		if ! is_loopback_url "$ZED_LLM_API_URL"; then
+			die "LLM API URL must be loopback (127.0.0.1/localhost/::1). Use --allow-nonlocal-llm to override."
+		fi
+		if ! is_loopback_url "$ZED_LLM_COMPLETIONS_URL"; then
+			die "LLM completions URL must be loopback. Use --allow-nonlocal-llm to override."
+		fi
+	else
+		warn "Non-local LLM URL allowed. Proprietary code may leave your machine via the LLM server."
+	fi
+}
+
+# --- Platform detection ---
+
+detect_platform() {
+	[ "$(uname -s)" = "Linux" ] || die "This script supports Linux only."
+
+	ARCH=$(uname -m)
+	case "$ARCH" in
+	x86_64 | amd64) ARCH=x86_64 ;;
+	aarch64 | arm64) ARCH=aarch64 ;;
+	*)
+		die "Unsupported architecture: $ARCH (supported: x86_64, aarch64)"
+		;;
+	esac
+
+	OS_ID=""
+	OS_ID_LIKE=""
+	if [ -f /etc/os-release ]; then
+		OS_ID=$(grep -E '^ID=' /etc/os-release | head -n1 | cut -d= -f2- | tr -d '"')
+		OS_ID_LIKE=$(grep -E '^ID_LIKE=' /etc/os-release | head -n1 | cut -d= -f2- | tr -d '"')
+	fi
+
+	PKG_MGR=""
+	case "$OS_ID" in
+	debian | ubuntu | linuxmint | pop)
+		PKG_MGR=apt
+		;;
+	fedora | rhel | centos | rocky | almalinux)
+		PKG_MGR=dnf
+		;;
+	arch | manjaro)
+		PKG_MGR=pacman
+		;;
+	opensuse* | sles)
+		PKG_MGR=zypper
+		;;
+	nixos | alpine)
+		warn "Distro $OS_ID may need a glibc compatibility layer for official Zed builds."
+		warn "See: https://zed.dev/docs/linux"
+		PKG_MGR=""
+		;;
+	*)
+		case "$OS_ID_LIKE" in
+		*debian* | *ubuntu*) PKG_MGR=apt ;;
+		*fedora* | *rhel*) PKG_MGR=dnf ;;
+		*arch*) PKG_MGR=pacman ;;
+		*suse*) PKG_MGR=zypper ;;
+		esac
+		;;
+	esac
+
+	log "Detected: OS=$OS_ID ARCH=$ARCH PKG_MGR=${PKG_MGR:-unknown}"
+}
+
+check_glibc() {
+	if ! have ldd; then
+		warn "ldd not found; skipping glibc version check"
+		return 0
+	fi
+
+	GLIBC_VER=$(ldd --version 2>&1 | head -n1 | sed -n 's/.* \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')
+	[ -n "$GLIBC_VER" ] || warn "Could not parse glibc version"
+
+	if [ -n "$GLIBC_VER" ]; then
+		min_ver=2.31
+		[ "$ARCH" = "aarch64" ] && min_ver=2.35
+
+		# Compare major.minor numerically
+		major=$(echo "$GLIBC_VER" | cut -d. -f1)
+		minor=$(echo "$GLIBC_VER" | cut -d. -f2)
+		min_major=$(echo "$min_ver" | cut -d. -f1)
+		min_minor=$(echo "$min_ver" | cut -d. -f2)
+
+		if [ "$major" -lt "$min_major" ] || { [ "$major" -eq "$min_major" ] && [ "$minor" -lt "$min_minor" ]; }; then
+			die "glibc $GLIBC_VER is too old (need >= $min_ver for $ARCH). Build Zed from source: https://zed.dev/docs/development/linux"
+		fi
+		log "glibc version: $GLIBC_VER (OK)"
+	fi
+}
+
+check_download_tool() {
+	if have curl; then
+		DOWNLOAD_CMD=curl
+	elif have wget; then
+		DOWNLOAD_CMD=wget
+	else
+		die "Need curl or wget to download Zed"
+	fi
+}
+
+check_vulkan() {
+	if have vulkaninfo || have vkcube; then
+		return 0
+	fi
+	# Check common library paths
+	for lib in libvulkan.so.1 libvulkan.so; do
+		if have ldconfig && ldconfig -p 2>/dev/null | grep -q "$lib"; then
+			return 0
+		fi
+	done
+	warn "Vulkan not detected. Zed requires a Vulkan-capable GPU driver."
+	warn "Install vulkan-tools and run: vkcube"
+}
+
+check_inotify() {
+	if [ -r /proc/sys/fs/inotify/max_user_watches ]; then
+		watches=$(cat /proc/sys/fs/inotify/max_user_watches)
+		if [ "$watches" -lt 8000 ] 2>/dev/null; then
+			warn "fs.inotify.max_user_watches=$watches (recommended >= 8000)"
+			warn "Fix: sudo sysctl fs.inotify.max_user_watches=64000"
+		fi
+	fi
+}
+
+deps_list() {
+	case "$PKG_MGR" in
+	apt)
+		echo "curl ca-certificates libvulkan1 vulkan-tools libsecret-1-0 gnome-keyring"
+		;;
+	dnf)
+		echo "curl ca-certificates vulkan-loader vulkan-tools libsecret gnome-keyring"
+		;;
+	pacman)
+		echo "curl ca-certificates vulkan-icd-loader vulkan-tools libsecret gnome-keyring"
+		;;
+	zypper)
+		echo "curl ca-certificates libvulkan1 vulkan-tools libsecret-1-0 gnome-keyring"
+		;;
+	*)
+		echo ""
+		;;
+	esac
+}
+
+check_deps() {
+	missing=""
+	for pkg in $(deps_list); do
+		case "$PKG_MGR" in
+		apt)
+			if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+				missing="$missing $pkg"
+			fi
+			;;
+		dnf)
+			if ! rpm -q "$pkg" >/dev/null 2>&1; then
+				missing="$missing $pkg"
+			fi
+			;;
+		pacman)
+			if ! pacman -Q "$pkg" >/dev/null 2>&1; then
+				missing="$missing $pkg"
+			fi
+			;;
+		zypper)
+			if ! rpm -q "$pkg" >/dev/null 2>&1; then
+				missing="$missing $pkg"
+			fi
+			;;
+		esac
+	done
+
+	if [ -n "$missing" ]; then
+		warn "Missing packages:$missing"
+		case "$PKG_MGR" in
+		apt) warn "Install: sudo apt install$missing" ;;
+		dnf) warn "Install: sudo dnf install$missing" ;;
+		pacman) warn "Install: sudo pacman -S$missing" ;;
+		zypper) warn "Install: sudo zypper install$missing" ;;
+		esac
+		if [ "$INSTALL_DEPS" -eq 0 ]; then
+			warn "Re-run with --install-deps to install automatically"
+		fi
+		return 1
+	fi
+	return 0
+}
+
+install_deps() {
+	[ "$INSTALL_DEPS" -eq 1 ] || return 0
+	[ -n "$PKG_MGR" ] || die "Cannot install deps: unknown package manager"
+
+	pkgs=$(deps_list)
+	case "$PKG_MGR" in
+	apt)
+		run sudo apt update
+		# shellcheck disable=SC2086
+		run sudo apt install -y $pkgs
+		;;
+	dnf)
+		# shellcheck disable=SC2086
+		run sudo dnf install -y $pkgs
+		;;
+	pacman)
+		# shellcheck disable=SC2086
+		run sudo pacman -S --needed --noconfirm $pkgs
+		;;
+	zypper)
+		# shellcheck disable=SC2086
+		run sudo zypper install -y $pkgs
+		;;
+	esac
+}
+
+# --- Zed installation ---
+
+check_path() {
+	case ":$PATH:" in
+	*":$ZED_BIN_DIR:"*) ;;
+	*)
+		warn "$ZED_BIN_DIR is not in PATH"
+		warn "Add: export PATH=\"\$HOME/.local/bin:\$PATH\""
+		;;
+	esac
+}
+
+install_zed_from_network() {
+	installer_url=https://zed.dev/install.sh
+
+	if [ -n "$ZED_INSTALLER_SHA256" ]; then
+		case "$ZED_INSTALLER_SHA256" in
+		*[!0-9A-Fa-f]*)
+			die "ZED_INSTALLER_SHA256 must be exactly 64 hexadecimal characters"
+			;;
+		esac
+		if [ "${#ZED_INSTALLER_SHA256}" -ne 64 ]; then
+			die "ZED_INSTALLER_SHA256 must be exactly 64 hexadecimal characters"
+		fi
+	fi
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would download $installer_url completely before execution"
+		if [ -n "$ZED_INSTALLER_SHA256" ]; then
+			log "Would verify upstream installer SHA-256: $ZED_INSTALLER_SHA256"
+		else
+			warn "Upstream installer has no pinned checksum; set ZED_INSTALLER_SHA256 or use a verified offline bundle"
+		fi
+		log "Would execute downloaded installer (channel=$ZED_CHANNEL version=$ZED_VERSION)"
+		return 0
+	fi
+
+	installer_tmp=$(mktemp) || die "Could not create temporary file for upstream installer"
+	case "$DOWNLOAD_CMD" in
+	curl)
+		if ! curl -fL "$installer_url" -o "$installer_tmp"; then
+			rm -f "$installer_tmp"
+			die "Failed to download upstream installer"
+		fi
+		;;
+	wget)
+		if ! wget -O "$installer_tmp" "$installer_url"; then
+			rm -f "$installer_tmp"
+			die "Failed to download upstream installer"
+		fi
+		;;
+	*)
+		rm -f "$installer_tmp"
+		die "Unsupported download command: $DOWNLOAD_CMD"
+		;;
+	esac
+
+	if [ -n "$ZED_INSTALLER_SHA256" ]; then
+		if have sha256sum; then
+			installer_actual_sha=$(sha256sum "$installer_tmp" | awk '{print $1}')
+		elif have shasum; then
+			installer_actual_sha=$(shasum -a 256 "$installer_tmp" | awk '{print $1}')
+		else
+			rm -f "$installer_tmp"
+			die "Need sha256sum or shasum to verify ZED_INSTALLER_SHA256"
+		fi
+		installer_expected_sha=$(printf '%s' "$ZED_INSTALLER_SHA256" | tr 'A-F' 'a-f')
+		if [ "$installer_actual_sha" != "$installer_expected_sha" ]; then
+			rm -f "$installer_tmp"
+			die "Upstream installer SHA-256 mismatch"
+		fi
+		log "Verified upstream installer SHA-256"
+	else
+		warn "Executing upstream installer without a pinned checksum; prefer ZED_INSTALLER_SHA256 or a verified offline bundle"
+	fi
+
+	installer_rc=0
+	env ZED_CHANNEL="$ZED_CHANNEL" ZED_VERSION="$ZED_VERSION" \
+		sh "$installer_tmp" || installer_rc=$?
+	rm -f "$installer_tmp"
+	[ "$installer_rc" -eq 0 ] || return "$installer_rc"
+}
+
+install_zed_from_bundle() {
+	bundle=$1
+
+	if [ "$DRY_RUN" -eq 0 ] && [ ! -f "$bundle" ]; then
+		die "ZED_BUNDLE_PATH not found: $bundle"
+	fi
+
+	resolve_zed_app_paths
+
+	suffix=""
+	case "$ZED_CHANNEL" in
+	stable) suffix="" ;;
+	*) suffix="-$ZED_CHANNEL" ;;
+	esac
+
+	log "Installing Zed from local bundle: $bundle"
+	run mkdir -p "$ZED_BIN_DIR" "$XDG_DATA_HOME/applications"
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would extract bundle into a staging directory and atomically replace $ZED_APP_DIR"
+		zed_bin="$ZED_APP_DIR/bin/zed"
+		run ln -sf "$zed_bin" "$ZED_BIN_DIR/zed"
+		desktop_file="$XDG_DATA_HOME/applications/${ZED_DESKTOP_ID}.desktop"
+		log "Would install desktop entry: $desktop_file"
+		return 0
+	fi
+
+	run mkdir -p "$HOME/.local"
+	bundle_stage=$(mktemp -d "$HOME/.local/.zed-secure-stage.XXXXXX") \
+		|| die "Could not create bundle staging directory"
+	staged_app="$bundle_stage/$(basename "$ZED_APP_DIR")"
+	if ! tar -xzf "$bundle" -C "$bundle_stage"; then
+		rm -rf "$bundle_stage"
+		die "Failed to extract Zed bundle; existing installation was not changed"
+	fi
+
+	if [ -x "$staged_app/bin/zed" ]; then
+		zed_rel=bin/zed
+	elif [ -x "$staged_app/bin/cli" ]; then
+		zed_rel=bin/cli
+	else
+		rm -rf "$bundle_stage"
+		die "Bundle does not contain an executable Zed app at $(basename "$ZED_APP_DIR")/bin"
+	fi
+
+	bundle_backup=""
+	if [ -e "$ZED_APP_DIR" ] || [ -L "$ZED_APP_DIR" ]; then
+		bundle_backup=$(mktemp -d "$HOME/.local/.zed-secure-backup.XXXXXX") \
+			|| {
+				rm -rf "$bundle_stage"
+				die "Could not reserve bundle backup path"
+			}
+		rmdir "$bundle_backup"
+		if ! mv "$ZED_APP_DIR" "$bundle_backup"; then
+			rm -rf "$bundle_stage"
+			die "Could not preserve existing Zed installation"
+		fi
+	fi
+
+	if ! mv "$staged_app" "$ZED_APP_DIR"; then
+		if [ -n "$bundle_backup" ]; then
+			mv "$bundle_backup" "$ZED_APP_DIR" || true
+		fi
+		rm -rf "$bundle_stage"
+		die "Could not activate staged Zed bundle; existing installation was restored"
+	fi
+	rm -rf "$bundle_stage"
+	if [ -n "$bundle_backup" ]; then
+		rm -rf "$bundle_backup"
+	fi
+
+	resolve_zed_app_paths
+	zed_bin="$ZED_APP_DIR/$zed_rel"
+	run ln -sf "$zed_bin" "$ZED_BIN_DIR/zed"
+
+	desktop_file="$XDG_DATA_HOME/applications/${ZED_DESKTOP_ID}.desktop"
+	src_dir="$ZED_APP_DIR/share/applications"
+
+	if [ -f "$src_dir/${ZED_DESKTOP_ID}.desktop" ]; then
+		run cp "$src_dir/${ZED_DESKTOP_ID}.desktop" "$desktop_file"
+	elif [ -f "$src_dir/zed${suffix}.desktop" ]; then
+		run cp "$src_dir/zed${suffix}.desktop" "$desktop_file"
+	else
+		warn "Desktop entry not found in bundle; skip desktop install"
+		return 0
+	fi
+
+	sed -i "s|Icon=zed|Icon=$ZED_APP_DIR/share/icons/hicolor/512x512/apps/zed.png|g" "$desktop_file"
+	sed -i "s|Exec=zed|Exec=$zed_bin|g" "$desktop_file"
+	log "Installed desktop entry: $desktop_file"
+}
+
+install_zed() {
+	log "Installing Zed (channel=$ZED_CHANNEL version=$ZED_VERSION)"
+
+	if [ "$DRY_RUN" -eq 0 ] && [ -n "$ZED_APP_BIN" ] && [ -x "$ZED_APP_BIN" ]; then
+		log "Zed already installed at $ZED_APP_BIN; skipping download"
+		run mkdir -p "$ZED_BIN_DIR"
+		check_path
+		return 0
+	fi
+
+	if [ "$OFFLINE" -eq 1 ] && [ -z "${ZED_BUNDLE_PATH:-}" ]; then
+		die "--offline requires ZED_BUNDLE_PATH when Zed is not already installed"
+	fi
+
+	if [ -n "${ZED_BUNDLE_PATH:-}" ]; then
+		install_zed_from_bundle "$ZED_BUNDLE_PATH"
+	elif [ "$OFFLINE" -eq 1 ]; then
+		die "--offline requires ZED_BUNDLE_PATH when Zed is not already installed"
+	else
+		install_zed_from_network
+	fi
+
+	if [ "$DRY_RUN" -eq 0 ] && [ ! -x "$ZED_APP_BIN" ]; then
+		die "Zed binary not found under $ZED_APP_DIR after install (channel=$ZED_CHANNEL). Check upstream install output."
+	fi
+
+	run mkdir -p "$ZED_BIN_DIR"
+	check_path
+}
+
+# --- Settings generation ---
+
+file_scan_exclusions_json() {
+	if [ "$DO_NOT_HIDE_ENV_FILES" -eq 1 ]; then
+		cat <<'EOF'
+  "file_scan_exclusions": [
+    "**/.git", "**/.svn", "**/.hg", "**/CVS",
+    "**/.DS_Store", "**/Thumbs.db", "**/.class",
+    "**/*.pem", "**/*.key", "**/secrets/**", "**/credentials/**"
+  ],
+EOF
+	else
+		cat <<'EOF'
+  "file_scan_exclusions": [
+    "**/.git", "**/.svn", "**/.hg", "**/CVS",
+    "**/.DS_Store", "**/Thumbs.db", "**/.class",
+    "**/.env*", "**/*.pem", "**/*.key", "**/secrets/**", "**/credentials/**"
+  ],
+EOF
+	fi
+}
+
+agent_tool_permissions_json() {
+	cat <<'EOF'
+  "agent": {
+    "tool_permissions": {
+      "default": "confirm",
+      "tools": {
+        "fetch": { "default": "deny" },
+        "search_web": { "default": "deny" },
+        "terminal": {
+          "default": "confirm",
+          "always_deny": [
+            { "pattern": "api\\.openai\\.com|api\\.anthropic\\.com|generativelanguage\\.googleapis\\.com|cloud\\.zed\\.dev" }
+          ]
+        },
+        "edit_file": {
+          "default": "confirm",
+          "always_deny": [
+            { "pattern": "\\.env" },
+            { "pattern": "secrets?/" },
+            { "pattern": "\\.(pem|key|crt|p12)$" }
+          ]
+        },
+        "write_file": {
+          "default": "confirm",
+          "always_deny": [
+            { "pattern": "\\.env" },
+            { "pattern": "secrets?/" },
+            { "pattern": "\\.(pem|key|crt|p12)$" }
+          ]
+        },
+        "delete_path": { "default": "confirm" }
+      }
+    }
+  },
+EOF
+}
+
+llm_config_json() {
+	cat <<EOF
+  "language_models": {
+    "openai_compatible": {
+      "$ZED_LLM_PROVIDER_NAME": {
+        "api_url": "$ZED_LLM_API_URL",
+        "available_models": [{
+          "name": "$ZED_LLM_MODEL",
+          "display_name": "Local LLM",
+          "max_tokens": 32768,
+          "capabilities": {
+            "tools": true,
+            "images": false,
+            "parallel_tool_calls": false,
+            "prompt_cache_key": false
+          }
+        }]
+      }
+    }
+  },
+EOF
+}
+
+edit_predictions_json() {
+	if [ "$DISABLE_LOCAL_EDIT_PREDICTIONS" -eq 1 ]; then
+		cat <<'EOF'
+  "show_edit_predictions": false,
+  "edit_predictions": {
+    "provider": "none"
+  }
+EOF
+	else
+		cat <<EOF
+  "edit_predictions": {
+    "provider": "open_ai_compatible_api",
+    "open_ai_compatible_api": {
+      "api_url": "$ZED_LLM_COMPLETIONS_URL",
+      "model": "$ZED_LLM_MODEL",
+      "prompt_format": "infer",
+      "max_output_tokens": 512
+    },
+    "disabled_globs": ["**/.env*", "**/*.pem", "**/*.key", "**/secrets/**"]
+  }
+EOF
+	fi
+}
+
+generate_settings_content() {
+	disable_ai_val=false
+	[ "$DISABLE_AI" -eq 1 ] && disable_ai_val=true
+
+	cat <<EOF
+{
+  "auto_update": false,
+  "disable_ai": $disable_ai_val,
+  "telemetry": { "diagnostics": false, "metrics": false },
+  "session": { "trust_all_worktrees": false },
+  "title_bar": {
+    "show_sign_in": false,
+    "show_onboarding_banner": false,
+    "show_user_picture": false,
+    "show_user_menu": false
+  },
+  "collaboration_panel": { "button": false },
+$(file_scan_exclusions_json)
+EOF
+
+	if [ "$DISABLE_AI" -eq 0 ]; then
+		llm_config_json
+	fi
+	agent_tool_permissions_json
+	if [ "$DISABLE_AI" -eq 0 ]; then
+		edit_predictions_json
+	else
+		cat <<'EOF'
+  "show_edit_predictions": false,
+  "edit_predictions": { "provider": "none" }
+EOF
+	fi
+
+	printf '%s\n' "}"
+}
+
+backup_settings() {
+	if [ -f "$ZED_SETTINGS" ]; then
+		ts=$(date +%Y%m%d%H%M%S)
+		backup="$ZED_SETTINGS.bak.$ts"
+		run cp "$ZED_SETTINGS" "$backup"
+		log "Backed up existing settings to $backup"
+	fi
+}
+
+merge_settings_json() {
+	full_overlay_merge "$1" "$2"
+}
+
+sync_settings_template_share() {
+	if [ ! -f "$ZED_SETTINGS_TEMPLATE" ]; then
+		return 0
+	fi
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would copy $ZED_SETTINGS_TEMPLATE -> $ZED_SETTINGS_TEMPLATE_SHARE"
+		return 0
+	fi
+	run mkdir -p "$ZED_SECURE_SHARE"
+	run cp "$ZED_SETTINGS_TEMPLATE" "$ZED_SETTINGS_TEMPLATE_SHARE"
+}
+
+write_settings_template_file() {
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would write $ZED_SETTINGS_TEMPLATE"
+	else
+		generate_settings_content >"$ZED_SETTINGS_TEMPLATE"
+		sync_settings_template_share
+	fi
+}
+
+check_zed_running() {
+	if pgrep -x zed >/dev/null 2>&1 \
+		|| pgrep -f '/zed\.app/bin/zed' >/dev/null 2>&1 \
+		|| pgrep -f '/zed-.*\.app/bin/zed' >/dev/null 2>&1; then
+		warn "Zed is running; close it to avoid a settings.json race, and do NOT start it again until this installer finishes"
+	fi
+}
+
+install_enforce_helper() {
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would install $ZED_ENFORCE_SCRIPT"
+		log "Would sync $ZED_SETTINGS_TEMPLATE_SHARE"
+		return 0
+	fi
+	run mkdir -p "$ZED_SECURE_SHARE"
+	run cp "$SCRIPT_DIR/zed-security-settings.sh" "$ZED_ENFORCE_SCRIPT"
+	run chmod +x "$ZED_ENFORCE_SCRIPT"
+	if [ -f "$ZED_SETTINGS_TEMPLATE" ]; then
+		sync_settings_template_share
+	elif [ -f "$ZED_SETTINGS_TEMPLATE_SHARE" ] && [ ! -f "$ZED_SETTINGS_TEMPLATE" ]; then
+		run cp "$ZED_SETTINGS_TEMPLATE_SHARE" "$ZED_SETTINGS_TEMPLATE"
+		log "Restored $ZED_SETTINGS_TEMPLATE from share backup"
+	fi
+}
+
+install_sandbox_helper() {
+	[ "$ENABLE_NETWORK_SANDBOX" -eq 1 ] || return 0
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would install $ZED_SANDBOX_HELPER"
+		return 0
+	fi
+	run mkdir -p "$ZED_SECURE_SHARE"
+	run cp "$ZED_SANDBOX_HELPER_SOURCE" "$ZED_SANDBOX_HELPER"
+	run chmod +x "$ZED_SANDBOX_HELPER"
+}
+
+write_settings() {
+	check_zed_running
+	run mkdir -p "$ZED_CONFIG_DIR"
+	write_settings_template_file
+
+	if [ ! -f "$ZED_SETTINGS" ]; then
+		if [ "$DRY_RUN" -eq 1 ]; then
+			log "Would write $ZED_SETTINGS from template"
+		else
+			cp "$ZED_SETTINGS_TEMPLATE" "$ZED_SETTINGS"
+		fi
+	else
+		if ! have jq; then
+			die "jq is required when updating existing settings.json (install jq; python3 recommended if Zed saved JSONC)"
+		fi
+		backup_settings
+		refresh_llm=0
+		if [ "$MERGE_CONFIG" -eq 1 ] || [ "$REFRESH_LLM_CONFIG" -eq 1 ]; then
+			refresh_llm=1
+		fi
+		if [ "$DRY_RUN" -eq 1 ]; then
+			if [ "$refresh_llm" -eq 1 ]; then
+				log "Would refresh security + language_models in $ZED_SETTINGS"
+			else
+				log "Would apply security-only overlay to $ZED_SETTINGS"
+			fi
+			ZED_ENFORCE_DRY_RUN=1 ZED_ENFORCE_REFRESH_LLM=$refresh_llm \
+				enforce_security_settings "$ZED_SETTINGS" "$ZED_SETTINGS_TEMPLATE" || true
+		else
+			enforce_rc=0
+			ZED_ENFORCE_DRY_RUN=0 ZED_ENFORCE_REFRESH_LLM=$refresh_llm \
+				enforce_security_settings "$ZED_SETTINGS" "$ZED_SETTINGS_TEMPLATE" || enforce_rc=$?
+			if [ "$enforce_rc" -eq 1 ]; then
+				die "Failed to apply settings overlay (close Zed and retry; install python3 for JSONC)"
+			fi
+			if [ "$enforce_rc" -eq 2 ]; then
+				warn "Partial privacy fix (sed only). Close Zed and run: $0 --repair-settings"
+			fi
+		fi
+	fi
+
+	if [ "$DRY_RUN" -eq 0 ] && [ -f "$ZED_SETTINGS" ]; then
+		if have jq && jq empty "$ZED_SETTINGS" 2>/dev/null; then
+			log "settings.json validated with jq"
+		else
+			warn "settings.json failed jq validation (Zed JSONC? zed-secure will try sed fallback)"
+		fi
+		if verify_security_settings "$ZED_SETTINGS"; then
+			log "Privacy settings verified (telemetry off, auto_update off)"
+		else
+			warn "Privacy verification failed immediately after write (close Zed and run --repair-settings)"
+		fi
+	fi
+}
+
+template_available() {
+	if [ -f "$ZED_SETTINGS_TEMPLATE" ]; then
+		return 0
+	fi
+	if [ -f "$ZED_SETTINGS_TEMPLATE_SHARE" ]; then
+		return 0
+	fi
+	return 1
+}
+
+do_repair_settings() {
+	if ! have jq; then
+		die "--repair-settings requires jq (python3 recommended for JSONC normalize)"
+	fi
+	check_zed_running
+	install_enforce_helper
+	run mkdir -p "$ZED_CONFIG_DIR"
+
+	if [ "$REGENERATE_TEMPLATE" -eq 1 ]; then
+		warn "Regenerating template from current CLI flags (--regenerate-template)"
+		write_settings_template_file
+	elif ! template_available; then
+		if [ ! -f "$ZED_SETTINGS" ]; then
+			die "settings.json missing; run full install: install-zed-no-ai.sh or install-zed-local-llm.sh MODEL"
+		fi
+		log "Template missing; inferring install mode from settings.json"
+		if ! apply_inferred_install_flags "$ZED_SETTINGS"; then
+			die "Cannot infer install mode from settings.json. Run: install-zed-no-ai.sh or install-zed-local-llm.sh MODEL"
+		fi
+		write_settings_template_file
+	fi
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would repair privacy settings in $ZED_SETTINGS"
+		return 0
+	fi
+	enforce_bin="$SCRIPT_DIR/zed-security-settings.sh"
+	if [ -x "$ZED_ENFORCE_SCRIPT" ]; then
+		enforce_bin="$ZED_ENFORCE_SCRIPT"
+	fi
+	ZED_ENFORCE_STRICT_VERIFY=1 sh "$enforce_bin" \
+		"$ZED_SETTINGS" "$ZED_SETTINGS_TEMPLATE"
+	repair_rc=$?
+	if [ "$repair_rc" -eq 1 ]; then
+		die "Failed to repair settings"
+	fi
+	if [ "$repair_rc" -eq 2 ]; then
+		die "Partial repair (sed only). Close Zed, install jq + python3, then retry --repair-settings"
+	fi
+	log "Privacy settings repaired"
+}
+
+# --- Wrapper ---
+
+resolve_trusted_sandbox_command() {
+	command_name=$1
+	required_owner=0
+	skip_parent_validation=0
+	if [ -x /usr/bin/stat ]; then
+		stat_bin=/usr/bin/stat
+	elif [ -x /bin/stat ]; then
+		stat_bin=/bin/stat
+	elif [ -x /run/current-system/sw/bin/stat ]; then
+		stat_bin=/run/current-system/sw/bin/stat
+	else
+		return 1
+	fi
+	if [ -x /usr/bin/readlink ]; then
+		readlink_bin=/usr/bin/readlink
+	elif [ -x /bin/readlink ]; then
+		readlink_bin=/bin/readlink
+	elif [ -x /run/current-system/sw/bin/readlink ]; then
+		readlink_bin=/run/current-system/sw/bin/readlink
+	else
+		return 1
+	fi
+	case "$command_name" in
+	systemd-run) candidates="/usr/bin/systemd-run /bin/systemd-run" ;;
+	sudo) candidates="/usr/bin/sudo /bin/sudo" ;;
+	python3) candidates="/usr/bin/python3 /usr/local/bin/python3 /bin/python3" ;;
+	*) return 1 ;;
+	esac
+	path_candidate=$(command -v "$command_name" 2>/dev/null || true)
+	if [ -n "$path_candidate" ]; then
+		candidates="$candidates $path_candidate"
+	fi
+	for candidate in $candidates; do
+		resolved=$("$readlink_bin" -f -- "$candidate" 2>/dev/null || true)
+		if [ -z "$resolved" ] || [ ! -f "$resolved" ] || [ ! -x "$resolved" ]; then
+			continue
+		fi
+		owner=$("$stat_bin" -Lc '%u' "$resolved" 2>/dev/null || true)
+		mode=$("$stat_bin" -Lc '%a' "$resolved" 2>/dev/null || true)
+		[ "$owner" = "$required_owner" ] || continue
+		case "$mode" in
+		'' | *[!0-7]*) continue ;;
+		esac
+		mode_value=$((0$mode))
+		[ $((mode_value & 022)) -eq 0 ] || continue
+		if [ "$skip_parent_validation" -eq 0 ]; then
+			parent=${resolved%/*}
+			[ -n "$parent" ] || parent=/
+			parents_safe=1
+			while :; do
+				parent_owner=$("$stat_bin" -Lc '%u' "$parent" 2>/dev/null || true)
+				parent_mode=$("$stat_bin" -Lc '%a' "$parent" 2>/dev/null || true)
+				case "$parent_mode" in
+				'' | *[!0-7]*) parents_safe=0 ;;
+				esac
+				if [ "$parent_owner" != "0" ]; then
+					parents_safe=0
+				elif [ "$parents_safe" -eq 1 ]; then
+					parent_mode_value=$((0$parent_mode))
+					[ $((parent_mode_value & 022)) -eq 0 ] || parents_safe=0
+				fi
+				[ "$parents_safe" -eq 1 ] || break
+				[ "$parent" = "/" ] && break
+				parent=${parent%/*}
+				[ -n "$parent" ] || parent=/
+			done
+			[ "$parents_safe" -eq 1 ] || continue
+		fi
+		printf '%s\n' "$resolved"
+		return 0
+	done
+	return 1
+}
+
+run_privileged_sandbox_probe() {
+	sandbox_uid=$(id -u)
+	sandbox_gid=$(id -g)
+	sandbox_unit="zed-secure-probe-${sandbox_uid}-$$"
+
+	set -- "$SANDBOX_SYSTEMD_RUN_BIN" --system --quiet --wait --pipe --collect \
+		--service-type=exec \
+		--unit="$sandbox_unit" \
+		--uid="$sandbox_uid" \
+		--gid="$sandbox_gid" \
+		--working-directory="$(pwd -P)" \
+		--property=KillMode=control-group \
+		--property=IPAddressDeny=any \
+		--property=IPAddressAllow=localhost \
+		-- "$SANDBOX_PYTHON_BIN" "$ZED_SANDBOX_HELPER_SOURCE" probe \
+		--expected-unit="${sandbox_unit}.service"
+
+	if [ "$sandbox_uid" -eq 0 ]; then
+		"$@"
+	else
+		"$SANDBOX_SUDO_BIN" -- "$@"
+	fi
+}
+
+check_sandbox_available() {
+	if [ "$ENABLE_NETWORK_SANDBOX" -eq 0 ]; then
+		return 0
+	fi
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would verify systemd-run network sandbox availability"
+		return 0
+	fi
+
+	SANDBOX_SYSTEMD_RUN_BIN=$(resolve_trusted_sandbox_command systemd-run || true)
+	SANDBOX_PYTHON_BIN=$(resolve_trusted_sandbox_command python3 || true)
+	if [ -z "$SANDBOX_SYSTEMD_RUN_BIN" ] || [ -z "$SANDBOX_PYTHON_BIN" ] \
+		|| [ ! -r "$ZED_SANDBOX_HELPER_SOURCE" ]; then
+		if [ "$ALLOW_NO_SANDBOX" -eq 1 ]; then
+			warn "Verified sandbox dependencies unavailable; continuing without network sandbox"
+			ENABLE_NETWORK_SANDBOX=0
+			return 0
+		fi
+		die "Network sandbox requires systemd-run, Python 3, and $ZED_SANDBOX_HELPER_SOURCE"
+	fi
+	if [ "$(id -u)" -eq 0 ]; then
+		if [ "$ALLOW_NO_SANDBOX" -eq 1 ]; then
+			warn "Refusing to launch sandboxed Zed as root; continuing without network sandbox"
+			ENABLE_NETWORK_SANDBOX=0
+			return 0
+		fi
+		die "Run the installer as your desktop user, not with sudo; the wrapper elevates only systemd-run"
+	fi
+	SANDBOX_SUDO_BIN=$(resolve_trusted_sandbox_command sudo || true)
+	if [ -z "$SANDBOX_SUDO_BIN" ]; then
+		if [ "$ALLOW_NO_SANDBOX" -eq 1 ]; then
+			warn "sudo not found; continuing without network sandbox"
+			ENABLE_NETWORK_SANDBOX=0
+			return 0
+		fi
+		die "Network sandbox requires sudo for the system service manager"
+	fi
+
+	# A successful manager call is not evidence: the helper must observe both
+	# the system-service cgroup and an actual permission-denied network send.
+	if ! run_privileged_sandbox_probe; then
+		if [ "$ALLOW_NO_SANDBOX" -eq 1 ]; then
+			warn "Network sandbox enforcement could not be verified; continuing without sandbox"
+			ENABLE_NETWORK_SANDBOX=0
+			return 0
+		fi
+		die "Network sandbox enforcement failed. Pass --allow-no-sandbox to continue without it."
+	fi
+
+	log "Network sandbox verified via the system service manager"
+}
+
+write_zed_secure_wrapper() {
+	sandbox_default=0
+	[ "$ENABLE_NETWORK_SANDBOX" -eq 1 ] && sandbox_default=1
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would write $ZED_SECURE (binary: $ZED_APP_BIN)"
+		return 0
+	fi
+
+	run mkdir -p "$ZED_BIN_DIR"
+
+	{
+		cat <<'WRAPPER_HEAD'
+#!/bin/sh
+set -eu
+
+# Unset documented cloud API keys that Zed reads from the process environment.
+# Custom OpenAI-compatible providers may use additional <PROVIDER_ID>_API_KEY names.
+unset OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GOOGLE_AI_API_KEY \
+      GEMINI_API_KEY MISTRAL_API_KEY DEEPSEEK_API_KEY XAI_API_KEY \
+      OPENCODE_API_KEY OPENROUTER_API_KEY VERCEL_AI_GATEWAY_API_KEY \
+      OLLAMA_API_KEY LMSTUDIO_API_KEY TOGETHER_AI_API_KEY
+
+ZED_BIN="${ZED_BIN:-WRAPPER_ZED_BIN_PLACEHOLDER}"
+ZED_SECURE_NETWORK_SANDBOX=WRAPPER_SANDBOX_DEFAULT
+ZED_SANDBOX_CHANNEL=WRAPPER_CHANNEL_PLACEHOLDER
+ZED_SANDBOX_HELPER="$HOME/.local/share/zed-secure/zed-sandbox-launcher.py"
+ZED_SANDBOX_PYTHON=WRAPPER_PYTHON_PLACEHOLDER
+ZED_SETTINGS="${XDG_CONFIG_HOME:-$HOME/.config}/zed/settings.json"
+ZED_TEMPLATE="${XDG_CONFIG_HOME:-$HOME/.config}/zed/settings.zed-secure-template.json"
+ZED_TEMPLATE_SHARE="${ZED_TEMPLATE_SHARE:-$HOME/.local/share/zed-secure/settings-template.json}"
+ZED_ENFORCE_SCRIPT="${ZED_ENFORCE_SCRIPT:-$HOME/.local/share/zed-secure/enforce-settings.sh}"
+
+if [ "${ZED_SECURE_ENFORCE_SETTINGS:-1}" = "1" ] && [ -x "$ZED_ENFORCE_SCRIPT" ]; then
+  if [ ! -f "$ZED_TEMPLATE" ] && [ -f "$ZED_TEMPLATE_SHARE" ]; then
+    ZED_TEMPLATE="$ZED_TEMPLATE_SHARE"
+  fi
+  enforce_rc=0
+  "$ZED_ENFORCE_SCRIPT" "$ZED_SETTINGS" "$ZED_TEMPLATE" || enforce_rc=$?
+  if [ "$enforce_rc" -ne 0 ]; then
+    if [ "$enforce_rc" -eq 2 ]; then
+      printf 'WARNING: zed-secure: partial privacy fix (sed only; telemetry). Close Zed and run: install-zed-secure.sh --repair-settings\n' >&2
+    else
+      printf 'WARNING: zed-secure: privacy overlay failed (see above). Run: install-zed-secure.sh --repair-settings\n' >&2
+    fi
+    if [ "${ZED_SECURE_ENFORCE_STRICT:-0}" = "1" ]; then
+      exit 1
+    fi
+  fi
+fi
+
+if [ "$ZED_SECURE_NETWORK_SANDBOX" = "1" ]; then
+  if [ ! -x "$ZED_SANDBOX_PYTHON" ]; then
+    printf 'ERROR: zed-secure: trusted Python 3 is missing: %s\n' "$ZED_SANDBOX_PYTHON" >&2
+    exit 1
+  fi
+  if [ ! -x "$ZED_SANDBOX_HELPER" ]; then
+    printf 'ERROR: zed-secure: sandbox helper is missing or not executable: %s\n' "$ZED_SANDBOX_HELPER" >&2
+    exit 1
+  fi
+  exec "$ZED_SANDBOX_PYTHON" "$ZED_SANDBOX_HELPER" launch \
+    --zed-bin "$ZED_BIN" \
+    --channel "$ZED_SANDBOX_CHANNEL" \
+    -- "$@"
+fi
+
+exec "$ZED_BIN" "$@"
+
+WRAPPER_HEAD
+	} | sed "s|WRAPPER_ZED_BIN_PLACEHOLDER|$ZED_APP_BIN|g" \
+		| sed "s|WRAPPER_SANDBOX_DEFAULT|$sandbox_default|g" \
+		| sed "s|WRAPPER_CHANNEL_PLACEHOLDER|$ZED_CHANNEL|g" \
+		| sed "s|WRAPPER_PYTHON_PLACEHOLDER|$SANDBOX_PYTHON_BIN|g" \
+		>"$ZED_SECURE"
+
+	run chmod +x "$ZED_SECURE"
+	log "Created wrapper: $ZED_SECURE"
+}
+
+find_latest_backup() {
+	backup_prefix=$1
+	latest_backup_path=
+	for backup_path in "$backup_prefix"*; do
+		if [ ! -e "$backup_path" ] && [ ! -L "$backup_path" ]; then
+			continue
+		fi
+		latest_backup_path=$backup_path
+	done
+	printf '%s\n' "$latest_backup_path"
+}
+
+replace_zed_cli_symlink() {
+	[ "$REPLACE_ZED_CLI" -eq 1 ] || return 0
+
+	run mkdir -p "$ZED_BIN_DIR"
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would replace $ZED_CLI with symlink to $ZED_SECURE"
+		if [ -e "$ZED_CLI" ] || [ -L "$ZED_CLI" ]; then
+			log "Would backup existing $ZED_CLI"
+		fi
+		run ln -sf "$ZED_SECURE" "$ZED_CLI"
+		return 0
+	fi
+
+	if [ -e "$ZED_CLI" ] || [ -L "$ZED_CLI" ]; then
+		current_target=$(readlink "$ZED_CLI" 2>/dev/null || true)
+		if [ "$current_target" = "$ZED_SECURE" ]; then
+			log "$ZED_CLI already points to zed-secure"
+			return 0
+		fi
+		backup="$ZED_CLI.bak.zed-secure.$(date +%Y%m%d%H%M%S)"
+		run cp -a "$ZED_CLI" "$backup"
+		log "Backed up existing $ZED_CLI to $backup"
+	fi
+
+	run ln -sf "$ZED_SECURE" "$ZED_CLI"
+	log "Replaced $ZED_CLI -> $ZED_SECURE"
+}
+
+restore_zed_cli_symlink() {
+	latest=$(find_latest_backup "$ZED_CLI.bak.zed-secure.")
+	if [ -n "$latest" ]; then
+		run rm -f "$ZED_CLI"
+		run cp -a "$latest" "$ZED_CLI"
+		run rm -f "$latest"
+		log "Restored $ZED_CLI from backup"
+		return 0
+	fi
+
+	if [ -L "$ZED_CLI" ] && [ "$(readlink "$ZED_CLI")" = "$ZED_SECURE" ]; then
+		run rm -f "$ZED_CLI"
+		log "Removed zed-secure symlink at $ZED_CLI"
+	fi
+}
+
+patch_desktop_entry() {
+	desktop=""
+	for candidate in \
+		"$XDG_DATA_HOME/applications/${ZED_DESKTOP_ID}.desktop" \
+		"$HOME/.local/share/applications/${ZED_DESKTOP_ID}.desktop"; do
+		if [ -f "$candidate" ]; then
+			desktop=$candidate
+			break
+		fi
+	done
+
+	if [ -z "$desktop" ]; then
+		warn "Desktop entry not found; skip GUI launcher patch"
+		return 0
+	fi
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would patch desktop entry: $desktop"
+		return 0
+	fi
+
+	backup="${desktop}.bak.$(date +%Y%m%d%H%M%S)"
+	run cp "$desktop" "$backup"
+
+	# Replace Exec= line to use zed-secure
+	sed "s|^Exec=.*|Exec=$ZED_SECURE %U|" "$backup" >"$desktop"
+	log "Patched desktop entry: $desktop (backup: $backup)"
+}
+
+# --- Endpoint blocklist ---
+
+apply_hosts_blocklist() {
+	[ "$ENABLE_ENDPOINT_BLOCKLIST" -eq 1 ] || return 0
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would append hosts blocklist to /etc/hosts (requires root)"
+		for domain in $BLOCKLIST_DOMAINS; do
+			[ -n "$domain" ] || continue
+			printf '[dry-run] 0.0.0.0 %s\n' "$domain"
+		done
+		return 0
+	fi
+
+	if [ ! -w /etc/hosts ]; then
+		tmp=$(mktemp)
+		{
+			printf '%s\n' "$HOSTS_MARKER_BEGIN"
+			for domain in $BLOCKLIST_DOMAINS; do
+				[ -n "$domain" ] || continue
+				printf '0.0.0.0 %s\n' "$domain"
+			done
+			printf '%s\n' "$HOSTS_MARKER_END"
+		} >"$tmp"
+		run sudo sh -c "grep -q '$HOSTS_MARKER_BEGIN' /etc/hosts 2>/dev/null || cat '$tmp' >> /etc/hosts"
+		rm -f "$tmp"
+	else
+		if ! grep -q "$HOSTS_MARKER_BEGIN" /etc/hosts 2>/dev/null; then
+			{
+				printf '%s\n' "$HOSTS_MARKER_BEGIN"
+				for domain in $BLOCKLIST_DOMAINS; do
+					[ -n "$domain" ] || continue
+					printf '0.0.0.0 %s\n' "$domain"
+				done
+				printf '%s\n' "$HOSTS_MARKER_END"
+			} >>/etc/hosts
+		fi
+	fi
+	log "Applied /etc/hosts blocklist (best-effort, exact domains only)"
+}
+
+apply_nft_blocklist() {
+	# Endpoint blocklist uses /etc/hosts only. Remove legacy global nft rules
+	# (inet zed_privacy output drop) from older installs — they affected all processes.
+	[ "$ENABLE_ENDPOINT_BLOCKLIST" -eq 1 ] || return 0
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would remove legacy nft table inet zed_privacy (if any); endpoint blocklist is hosts-only"
+		return 0
+	fi
+
+	remove_nft_blocklist
+	warn "Endpoint blocklist is /etc/hosts only (no global nft rules); use --enable-network-sandbox for process isolation"
+	log "Endpoint blocklist: hosts-only (legacy nft table removed if present)"
+}
+
+remove_hosts_blocklist() {
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would remove hosts blocklist markers from /etc/hosts"
+		return 0
+	fi
+
+	remove_cmd="sed -i '/$HOSTS_MARKER_BEGIN/,/$HOSTS_MARKER_END/d' /etc/hosts"
+	if [ "$(id -u)" -eq 0 ]; then
+		run sh -c "$remove_cmd"
+	else
+		run sudo sh -c "$remove_cmd"
+	fi
+}
+
+remove_nft_blocklist() {
+	have nft || return 0
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would delete nft table inet zed_privacy"
+		return 0
+	fi
+	if [ "$(id -u)" -eq 0 ]; then
+		if nft list table inet zed_privacy >/dev/null 2>&1; then
+			run nft delete table inet zed_privacy
+		fi
+	else
+		if sudo nft list table inet zed_privacy >/dev/null 2>&1; then
+			run sudo nft delete table inet zed_privacy
+		fi
+	fi
+}
+
+apply_uid_wide_strict_firewall() {
+	[ "$UID_WIDE_STRICT_FIREWALL" -eq 1 ] || return 0
+
+	uid=$(id -u)
+	warn "DANGEROUS: UID-wide strict firewall enabled for UID $uid"
+	warn "This blocks ALL outbound IPv4 and IPv6 traffic for every process you run, except loopback."
+	warn "Browsers, git, package managers, SSH, and other tools may lose network access."
+	warn "This is NOT the same as the per-process network sandbox or /etc/hosts blocklist."
+	warn "To remove: sudo nft delete table inet zed_uid_strict"
+	warn "           or run: ./install-zed-secure.sh --uninstall"
+
+	if ! have nft; then
+		die "nft required for --uid-wide-strict-firewall"
+	fi
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		log "Would create IPv4 and IPv6 nft rules blocking outbound for uid $uid except loopback"
+		return 0
+	fi
+
+	if [ "$YES" -eq 0 ]; then
+		warn "Applying UID-wide firewall in 5 seconds... (use --yes to skip this pause)"
+		i=5
+		while [ "$i" -gt 0 ]; do
+			printf '  %s...\n' "$i" >&2
+			sleep 1
+			i=$((i - 1))
+		done
+	fi
+
+	nft_script=$(mktemp)
+	cat >"$nft_script" <<EOF
+add table inet zed_uid_strict
+delete table inet zed_uid_strict
+add table inet zed_uid_strict
+add chain inet zed_uid_strict output { type filter hook output priority 0; policy accept; }
+add rule inet zed_uid_strict output meta skuid $uid ip daddr != 127.0.0.0/8 drop
+add rule inet zed_uid_strict output meta skuid $uid ip6 daddr != ::1 drop
+EOF
+
+	if [ "$(id -u)" -eq 0 ]; then
+		run nft -f "$nft_script"
+	else
+		run sudo nft -f "$nft_script"
+	fi
+	rm -f "$nft_script"
+}
+
+# --- Uninstall ---
+
+do_uninstall() {
+	log "Uninstalling zed-secure components"
+
+	if [ -f "$ZED_SECURE" ]; then
+		run rm -f "$ZED_SECURE"
+	fi
+
+	restore_zed_cli_symlink
+
+	# Restore desktop from latest backup if present (all known release channels)
+	for desktop_id in dev.zed.Zed dev.zed.Zed-Preview dev.zed.Zed-Nightly dev.zed.Zed-Dev; do
+		for candidate in \
+			"$XDG_DATA_HOME/applications/${desktop_id}.desktop" \
+			"$HOME/.local/share/applications/${desktop_id}.desktop"; do
+			latest=$(find_latest_backup "${candidate}.bak.")
+			if [ -n "$latest" ]; then
+				run cp "$latest" "$candidate"
+				log "Restored desktop entry from $latest"
+			fi
+		done
+	done
+
+	remove_hosts_blocklist
+	remove_nft_blocklist
+
+	log "Uninstall complete. Zed itself was NOT removed."
+	log "To remove Zed: ~/.local/bin/zed --uninstall"
+}
+
+# --- Summary ---
+
+print_summary() {
+	cat <<EOF
+
+=== Zed Secure Install Summary ===
+
+Config:     $ZED_SETTINGS
+Wrapper:    $ZED_SECURE
+Zed binary: $ZED_APP_BIN
+Channel:    $ZED_CHANNEL
+AI mode:    $( [ "$DISABLE_AI" -eq 1 ] && echo "disabled" || echo "local OpenAI-compatible" )
+EOF
+
+	if [ "$DISABLE_AI" -eq 0 ]; then
+		printf 'LLM API:    %s\n' "$ZED_LLM_API_URL"
+		printf 'LLM completions: %s\n' "$ZED_LLM_COMPLETIONS_URL"
+		printf 'LLM model:  %s\n' "$ZED_LLM_MODEL"
+	fi
+
+	if [ "$ENABLE_NETWORK_SANDBOX" -eq 1 ] && [ "$DRY_RUN" -eq 1 ]; then
+		sandbox_summary="requested (not verified in dry-run)"
+	elif [ "$ENABLE_NETWORK_SANDBOX" -eq 1 ]; then
+		sandbox_summary="verified (system service; direct IP egress is localhost-only)"
+	else
+		sandbox_summary="disabled"
+	fi
+	printf 'Sandbox:    %s\n' "$sandbox_summary"
+	printf 'Blocklist:  %s\n' "$( [ "$ENABLE_ENDPOINT_BLOCKLIST" -eq 1 ] && echo "enabled (hosts only; no global nft rules)" || echo "disabled" )"
+	if [ "$REPLACE_ZED_CLI" -eq 1 ]; then
+		printf 'CLI alias:  %s -> %s\n' "$ZED_CLI" "$ZED_SECURE"
+	fi
+
+	cat <<'EOF'
+
+Launch Zed securely:
+  zed-secure .
+EOF
+
+	if [ "$REPLACE_ZED_CLI" -eq 1 ]; then
+		cat <<'EOF'
+  zed .                    # also routes through zed-secure (--replace-zed-cli)
+EOF
+	fi
+
+	cat <<EOF
+
+Direct launch bypasses wrapper (no env key clearing / sandbox):
+  $ZED_APP_BIN
+
+Post-install checks:
+  sh -n scripts/install-zed-secure.sh
+  grep -E 'telemetry|auto_update|show_sign_in' "$XDG_CONFIG_HOME/zed/settings.json"
+  zed-secure --version
+
+IMPORTANT limitations:
+  - Do NOT sign in to Zed account or add cloud API keys
+  - Settings alone do NOT guarantee zero network egress with AI enabled
+  - Local-AI installs enable network sandbox by default; use --no-network-sandbox to opt out
+  - Sandboxed launches may request administrator authentication every time
+  - Sandboxed Zed uses separate data under ~/.local/share/zed-secure/<channel>
+  - The sandbox blocks direct non-loopback IP traffic, not Unix sockets, D-Bus, or localhost brokers
+  - Endpoint blocklist is hosts-only (no global nft rules) and does NOT replace sandbox
+  - Do NOT launch $ZED_APP_BIN directly; it bypasses zed-secure protections
+  - Use --replace-zed-cli to make 'zed' in PATH point at zed-secure
+  - --uid-wide-strict-firewall requires --i-accept-uid-wide-firewall (UID-wide nft, not endpoint blocklist)
+  - Training data opt-in has no settings key (UI toggle only)
+  - Extensions and language servers may make network requests
+  - Zed UI may re-enable telemetry; zed-secure re-applies privacy overlay on each launch
+  - Run: install-zed-secure.sh --repair-settings (Zed closed) to fix settings.json
+  - Opt out of launch-time enforce: ZED_SECURE_ENFORCE_SETTINGS=0 zed-secure .
+
+EOF
+}
+
+# --- Main ---
+
+main() {
+	parse_args "$@"
+	validate_uid_wide_firewall_flags
+	apply_local_ai_sandbox_defaults
+	finalize_install_action_flags
+
+	if [ "$UNINSTALL" -eq 1 ]; then
+		if [ "$DISABLE_ENDPOINT_BLOCKLIST" -eq 1 ] || [ "$UNINSTALL" -eq 1 ]; then
+			remove_hosts_blocklist
+			remove_nft_blocklist
+		fi
+		do_uninstall
+		exit 0
+	fi
+
+	if [ "$DISABLE_ENDPOINT_BLOCKLIST" -eq 1 ]; then
+		remove_hosts_blocklist
+		remove_nft_blocklist
+		if [ "$INSTALL_ACTION_REQUESTED" -eq 0 ]; then
+			log "Endpoint blocklist removed"
+			exit 0
+		fi
+	fi
+
+	if [ "$REPAIR_SETTINGS" -eq 1 ]; then
+		install_enforce_helper
+		do_repair_settings
+		exit 0
+	fi
+
+	validate_zed_channel
+	resolve_zed_app_paths
+
+	validate_llm_urls
+
+	detect_platform
+	check_glibc
+	check_download_tool
+	check_vulkan
+	check_inotify
+
+	if ! check_deps; then
+		if [ "$INSTALL_DEPS" -eq 0 ]; then
+			warn "Some dependencies missing; continuing anyway (Zed may not work correctly)"
+		fi
+	fi
+	install_deps
+
+	check_sandbox_available
+
+	install_zed
+	resolve_zed_app_paths
+	if [ "$DRY_RUN" -eq 0 ] && [ ! -x "$ZED_APP_BIN" ]; then
+		die "Zed binary not found under $ZED_APP_DIR after install (channel=$ZED_CHANNEL). Check upstream install output."
+	fi
+	write_settings
+	install_enforce_helper
+	install_sandbox_helper
+	write_zed_secure_wrapper
+	replace_zed_cli_symlink
+	patch_desktop_entry
+
+	apply_hosts_blocklist
+	apply_nft_blocklist
+	apply_uid_wide_strict_firewall
+
+	print_summary
+}
+
+main "$@"
