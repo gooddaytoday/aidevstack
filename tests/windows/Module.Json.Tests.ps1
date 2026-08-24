@@ -5,12 +5,14 @@ BeforeAll {
 }
 
 Describe 'New-ZedSettingsObject + ConvertTo-ZedJson' {
-    function Get-Parsed {
-        param([hashtable]$Args)
-        $obj = New-ZedSettingsObject @Args
-        $json = ConvertTo-ZedJson $obj
-        # The serializer output must be valid JSON.
-        return ($json | ConvertFrom-Json)
+    BeforeAll {
+        function Get-Parsed {
+            param([hashtable]$Parameters)
+            $obj = New-ZedSettingsObject @Parameters
+            $json = ConvertTo-ZedJson $obj
+            # The serializer output must be valid JSON.
+            return ($json | ConvertFrom-Json)
+        }
     }
 
     It 'case 1: -DisableAi sets disable_ai true' {
