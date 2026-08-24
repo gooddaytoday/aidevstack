@@ -79,9 +79,14 @@ class NetworkProbeTests(unittest.TestCase):
                 )
 
     def test_tcp_etimedout_is_accepted_after_udp_permission_denial(self) -> None:
+        class LegacySocketTimeout(OSError):
+            pass
+
         address = SANDBOX.InterfaceAddress(SANDBOX.socket.AF_INET, "192.0.2.10")
         receiver, sender = self._socket_pair(OSError(SANDBOX.errno.ETIMEDOUT, "timed out"))
         with mock.patch.object(
+            SANDBOX.socket, "timeout", LegacySocketTimeout
+        ), mock.patch.object(
             SANDBOX.socket, "socket", side_effect=[receiver, sender]
         ):
             SANDBOX.verify_non_loopback_denied(
@@ -136,14 +141,8 @@ class NetworkProbeTests(unittest.TestCase):
             SANDBOX.verify_unit_ip_properties("zed-secure-1000-1.service")
 
     def test_unit_with_broad_allow_policy_is_rejected(self) -> None:
-        def property_result(command, **_kwargs):
-            property_name = command[command.index("--value") - 1].split("=", 1)[1]
-            value = (
-                "0.0.0.0/0 ::/0\n"
-                if property_name == "IPAddressDeny"
-                else "0.0.0.0/0 ::/0\n"
-            )
-            return mock.Mock(returncode=0, stdout=value, stderr="")
+        def property_result(_command, **_kwargs):
+            return mock.Mock(returncode=0, stdout="0.0.0.0/0 ::/0\n", stderr="")
 
         with mock.patch.object(
             SANDBOX, "_trusted_command", return_value="/usr/bin/systemctl"
@@ -201,6 +200,17 @@ class NetworkProbeTests(unittest.TestCase):
 
 class ExecTests(unittest.TestCase):
     def test_desktop_launch_uses_canonical_askpass_with_sudo_a(self) -> None:
+        real_stat = os.stat
+        namespace_root_uid = real_stat("/").st_uid
+
+        def host_root_stat(path, *args, **kwargs):
+            metadata = real_stat(path, *args, **kwargs)
+            if metadata.st_uid != namespace_root_uid:
+                return metadata
+            fields = list(metadata)
+            fields[4] = 0
+            return os.stat_result(fields)
+
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             zed = home / "zed"
@@ -217,6 +227,10 @@ class ExecTests(unittest.TestCase):
                 clear=True,
             ), mock.patch.object(SANDBOX.os, "getuid", return_value=1234), mock.patch.object(
                 SANDBOX.os, "getgid", return_value=4321
+            ), mock.patch.object(
+                SANDBOX.os, "stat", side_effect=host_root_stat
+            ), mock.patch.object(
+                SANDBOX.Path, "stat", host_root_stat
             ), mock.patch.object(
                 SANDBOX, "_trusted_command", side_effect=lambda name: commands[name]
             ), mock.patch.object(

@@ -26,11 +26,15 @@ function Invoke-ZedScript {
         $saved[$k] = [Environment]::GetEnvironmentVariable($k)
         [Environment]::SetEnvironmentVariable($k, $EnvVars[$k])
     }
+    $savedErrorActionPreference = $ErrorActionPreference
     try {
         $allArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath) + $Arguments
+        $ErrorActionPreference = 'Continue'
         $out = (& $exe @allArgs 2>&1 | Out-String)
-        return [pscustomobject]@{ Output = $out; ExitCode = $LASTEXITCODE }
+        $exitCode = $LASTEXITCODE
+        return [pscustomobject]@{ Output = $out; ExitCode = $exitCode }
     } finally {
+        $ErrorActionPreference = $savedErrorActionPreference
         foreach ($k in $EnvVars.Keys) {
             [Environment]::SetEnvironmentVariable($k, $saved[$k])
         }

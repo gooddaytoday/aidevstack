@@ -35,6 +35,7 @@ EOF
 		-e "s|/usr/bin/sudo|$backend_bin/sudo|g" \
 		-e "s|/usr/bin/python3|$backend_bin/python3|g" \
 		-e 's/metadata.st_uid != 0/metadata.st_uid != os.getuid()/' \
+		-e 's|not in (0, uid)|not in (0, uid, os.stat("/").st_uid)|g' \
 		-e 's/if trusted_parents:/if True:/' \
 		"$ROOT/scripts/zed-sandbox-launcher.py" >"$fixture/zed-sandbox-launcher.py"
 	chmod +x "$fixture/install-zed-secure.sh" "$fixture/zed-security-settings.sh" \
@@ -203,6 +204,7 @@ HOME="$runtime_home" XDG_CONFIG_HOME="$runtime_home/.config" \
 
 runtime_wrapper="$runtime_home/.local/bin/zed-secure"
 [ -x "$runtime_wrapper" ] || fail 'sandboxed wrapper was not installed'
+: >"$runtime_trace"
 if HOME="$runtime_home" XDG_CONFIG_HOME="$runtime_home/.config" \
 	XDG_DATA_HOME="$runtime_home/.local/share" PATH="$hostile_bin:$runtime_path" \
 	SANDBOX_TRACE="$runtime_trace" SUDO_ASKPASS=/bin/true \

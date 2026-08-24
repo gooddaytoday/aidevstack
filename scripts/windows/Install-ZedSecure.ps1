@@ -317,11 +317,7 @@ function Get-ZedCompletionsUrl {
         $pathBase = $parts[0]
     }
     $pathBase = $pathBase.TrimEnd('/')
-    if ($pathBase -match '/v1$') {
-        $completions = $pathBase + '/completions'
-    } else {
-        $completions = $pathBase + '/completions'
-    }
+    $completions = $pathBase + '/completions'
     if ($query) { $completions = $completions + '?' + $query }
     return $completions
 }
@@ -497,6 +493,10 @@ function Install-Zed {
         Stop-Die "-Offline requires ZED_BUNDLE_PATH when Zed is not already installed"
     }
     if ($script:Channel -eq 'nightly' -or $script:Channel -eq 'dev') {
+        if ($DryRun) {
+            Write-Log "Would require ZED_BUNDLE_PATH (.zip) to install channel '$($script:Channel)'"
+            return
+        }
         Stop-Die "channel '$($script:Channel)' is unofficial on Windows; provide ZED_BUNDLE_PATH (.zip) to install it"
     }
     if ($script:Channel -eq 'preview') {
@@ -752,7 +752,7 @@ function Get-ZedShortcutPaths {
 }
 
 function Repair-Shortcuts {
-    $shortcuts = Get-ZedShortcutPaths
+    $shortcuts = @(Get-ZedShortcutPaths)
     if ($shortcuts.Count -eq 0) {
         if ($DryRun) { Write-Log "Would patch Start Menu / Desktop Zed shortcut (none found in dry-run scan)" }
         else { Write-Warn "No Zed shortcut found; skipping GUI launcher patch" }

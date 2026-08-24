@@ -29,7 +29,7 @@ original non-root UID/GID.
 
 ## Quick Start
 
-Two preset installers wrap [`install-zed-secure.sh`](scripts/install-zed-secure.sh) with common flag combinations. Extra flags (`--dry-run`, `--channel`, `--offline`, etc.) are forwarded and can override non-AI preset behavior (for example `--no-network-sandbox` on the local-LLM preset).
+Two preset installers wrap [`install-zed-secure.sh`](scripts/install-zed-secure.sh) with common flag combinations. Extra flags (`--dry-run`, `--channel`, `--offline`, etc.) are forwarded and can override preset defaults (for example `--no-network-sandbox` on the local-LLM preset).
 
 ### No AI (maximum privacy, no local LLM)
 

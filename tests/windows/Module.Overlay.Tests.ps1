@@ -124,13 +124,13 @@ Describe 'Test-ZedSecuritySettings + Repair-ZedPrivacyByRegex' {
         (Get-Content -Raw $f) | Should -Match ([regex]::Escape('"metrics": false'))
     }
 
-    It 'raw-text fallback rejects malformed settings unless auto_update is false' {
+    It 'rejects malformed settings regardless of security-looking literals' {
         $f = Join-Path $TestDrive 'verify-raw.json'
         Write-Utf8NoBom -Path $f -Text '{ "telemetry": { "metrics": false, "diagnostics": false }, "auto_update": null, "broken": [1, }'
         Test-ZedSecuritySettings -Path $f | Should -BeFalse
 
         Write-Utf8NoBom -Path $f -Text '{ "telemetry": { "metrics": false, "diagnostics": false }, "auto_update": false, "broken": [1, }'
-        Test-ZedSecuritySettings -Path $f | Should -BeTrue
+        Test-ZedSecuritySettings -Path $f | Should -BeFalse
 
         Write-Utf8NoBom -Path $f -Text '{ "telemetry": { "metrics": false, "diagnostics": false }, "auto_update": falsehood, "broken": [1, }'
         Test-ZedSecuritySettings -Path $f | Should -BeFalse

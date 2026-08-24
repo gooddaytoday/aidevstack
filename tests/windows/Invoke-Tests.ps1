@@ -36,10 +36,11 @@ if ($failed -gt 0) {
 
 Write-Host ''
 Write-Host '==> Pester'
-Import-Module Pester -MinimumVersion 5.0 -ErrorAction Stop
+Import-Module Pester -RequiredVersion 5.7.1 -ErrorAction Stop
 $cfg = New-PesterConfiguration
 $cfg.Run.Path = $TestsDir
 $cfg.Run.Exit = $false
+$cfg.Run.PassThru = $true
 $cfg.Output.Verbosity = 'Detailed'
 $result = Invoke-Pester -Configuration $cfg
 if ($result.FailedCount -gt 0) {

@@ -27,7 +27,7 @@ case "${1:-}" in
 	;;
 esac
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
 INSTALLER="$SCRIPT_DIR/install-zed-secure.sh"
 
 if [ ! -f "$INSTALLER" ]; then

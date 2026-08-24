@@ -170,7 +170,7 @@ def verify_non_loopback_denied(
                     sender.connect(_destination(address, port))
                 else:
                     sender.sendto(b"zed-secure-egress", _destination(address, port))
-            except socket.timeout as exc:
+            except (socket.timeout, TimeoutError) as exc:
                 # systemd's cgroup-skb program rejects UDP sendto() with EPERM,
                 # but drops a TCP SYN, so connect() times out. A timeout is
                 # useful only as the secondary TCP non-escape check after the

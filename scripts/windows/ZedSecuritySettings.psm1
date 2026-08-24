@@ -365,22 +365,8 @@ function Test-ZedSecuritySettings {
         return $ok
     }
 
-    $text = ''
-    try { $text = [System.IO.File]::ReadAllText($Path) } catch { return $false }
-    $ok = $true
-    if ($text -notmatch '"metrics"\s*:\s*false') {
-        Write-ZedWarn 'telemetry.metrics is not false (JSONC; text check)'
-        $ok = $false
-    }
-    if ($text -notmatch '"diagnostics"\s*:\s*false') {
-        Write-ZedWarn 'telemetry.diagnostics is not false (JSONC; text check)'
-        $ok = $false
-    }
-    if ($text -notmatch '"auto_update"\s*:\s*false\b') {
-        Write-ZedWarn 'auto_update is not false (JSONC; text check)'
-        $ok = $false
-    }
-    return $ok
+    Write-ZedWarn 'settings are not parseable JSONC'
+    return $false
 }
 
 # Infer install mode from an existing settings.json (for template regeneration on repair).

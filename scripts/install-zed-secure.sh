@@ -4,7 +4,7 @@
 
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
 # shellcheck source=zed-security-settings.sh
 . "$SCRIPT_DIR/zed-security-settings.sh"
 
@@ -1319,7 +1319,9 @@ resolve_trusted_sandbox_command() {
 	fi
 	for candidate in $candidates; do
 		resolved=$("$readlink_bin" -f -- "$candidate" 2>/dev/null || true)
-		[ -n "$resolved" ] && [ -f "$resolved" ] && [ -x "$resolved" ] || continue
+		if [ -z "$resolved" ] || [ ! -f "$resolved" ] || [ ! -x "$resolved" ]; then
+			continue
+		fi
 		owner=$("$stat_bin" -Lc '%u' "$resolved" 2>/dev/null || true)
 		mode=$("$stat_bin" -Lc '%a' "$resolved" 2>/dev/null || true)
 		[ "$owner" = "$required_owner" ] || continue
@@ -1513,6 +1515,18 @@ WRAPPER_HEAD
 	log "Created wrapper: $ZED_SECURE"
 }
 
+find_latest_backup() {
+	backup_prefix=$1
+	latest_backup_path=
+	for backup_path in "$backup_prefix"*; do
+		if [ ! -e "$backup_path" ] && [ ! -L "$backup_path" ]; then
+			continue
+		fi
+		latest_backup_path=$backup_path
+	done
+	printf '%s\n' "$latest_backup_path"
+}
+
 replace_zed_cli_symlink() {
 	[ "$REPLACE_ZED_CLI" -eq 1 ] || return 0
 
@@ -1543,7 +1557,7 @@ replace_zed_cli_symlink() {
 }
 
 restore_zed_cli_symlink() {
-	latest=$(ls -t "$ZED_CLI.bak.zed-secure."* 2>/dev/null | head -n1 || true)
+	latest=$(find_latest_backup "$ZED_CLI.bak.zed-secure.")
 	if [ -n "$latest" ]; then
 		run rm -f "$ZED_CLI"
 		run cp -a "$latest" "$ZED_CLI"
@@ -1738,7 +1752,7 @@ do_uninstall() {
 		for candidate in \
 			"$XDG_DATA_HOME/applications/${desktop_id}.desktop" \
 			"$HOME/.local/share/applications/${desktop_id}.desktop"; do
-			latest=$(ls -t "${candidate}.bak."* 2>/dev/null | head -n1 || true)
+			latest=$(find_latest_backup "${candidate}.bak.")
 			if [ -n "$latest" ]; then
 				run cp "$latest" "$candidate"
 				log "Restored desktop entry from $latest"

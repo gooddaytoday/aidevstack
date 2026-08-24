@@ -37,7 +37,7 @@ Describe '-DisableEndpointBlocklist only' {
 
 Describe 'Invoke-ZedFirewallStep.ps1 hosts logic (real, temp file)' {
     It 'appends an idempotent marker block and removes it' {
-        $hosts = Join-Path $TestDrive ([guid]::NewGuid() + '-hosts')
+        $hosts = Join-Path $TestDrive (([guid]::NewGuid().ToString()) + '-hosts')
         Set-Content -LiteralPath $hosts -Value "127.0.0.1 localhost" -NoNewline
         $args = @('-AddHostsBlocklist', '-HostsPath', $hosts, '-Domains', 'cloud.zed.dev,api.openai.com')
         Invoke-ZedScript -Script 'Invoke-ZedFirewallStep.ps1' -Arguments $args | Out-Null

@@ -53,7 +53,7 @@ case "$MODEL" in
 	;;
 esac
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
 INSTALLER="$SCRIPT_DIR/install-zed-secure.sh"
 LLM_API_URL=${ZED_LLM_API_URL:-http://127.0.0.1:8080/v1}
 
